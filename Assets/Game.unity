@@ -231,6 +231,57 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1 &285409771
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 285409773}
+  - component: {fileID: 285409772}
+  m_Layer: 0
+  m_Name: SnowGravity
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &285409772
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 285409771}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: bda35fa577e400b448167c5a72ca4dfb, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::SnowGravity
+  stepInterval: 0.05
+  fallRate: 2
+  supportThreshold: 0.5
+  epsilon: 0.001
+  iterationsPerStep: 6
+  maxDirtyChunksPerStep: 32
+  processMostRecentFirst: 1
+--- !u!4 &285409773
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 285409771}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 5.98115, y: -0.01, z: 35.4548}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &470050885
 GameObject:
   m_ObjectHideFlags: 0
@@ -275,20 +326,14 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 15b1440fe5941bf40895644fb73f372b, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::SnowInteractor
-  aimCamera: {fileID: 1450312634}
-  aimLayerMask:
+  cam: {fileID: 1450312634}
+  snowMask:
     serializedVersion: 2
     m_Bits: 4294967295
-  maxDistance: 20
-  holdToDig: 0
-  digRadius: 1
-  digInnerFullClear01: 0.99
-  digClearRate: 25
-  plowHalfWidth: 4
-  plowLength: 2
-  plowMovePerSecond: 25
-  depositForwardDistance: 1
-  sidewaysSpill: 0.15
+  paintRadius: 1
+  paintStrength: 0.1
+  plowRadius: 1
+  plowMoveAmountPerTick: 0.25
 --- !u!1 &893676947
 GameObject:
   m_ObjectHideFlags: 0
@@ -728,16 +773,41 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::SnowController
   snowSettings:
-    snowDetail: 0.25
-    noiseType: 3
-    fractalType: 1
-    fractalOctaves: 5
-    fractalLacunarity: 2
-    fractalGain: 0.5
-    scale: 30
-    minHeight: 0.01
-    maxHeight: 3
+    voxelSize: 0.25
+    falloffWidth: 2
+    snowStabilityThreshold: 0.25
+    smoothingIterations: 1
+    noiseType1: 0
+    fractalType1: 1
+    octaves1: 4
+    lacunarity1: 2
+    gain1: 0.5
+    scale1: 50
+    weight1: 0.7
+    power1: 2
+    noiseType2: 0
+    fractalType2: 1
+    octaves2: 3
+    lacunarity2: 2.3
+    gain2: 0.45
+    scale2: 15
+    weight2: 0.25
+    power2: 1
+    noiseType3: 0
+    fractalType3: 2
+    octaves3: 2
+    lacunarity3: 2.1
+    gain3: 3
+    scale3: 15
+    weight3: 0.12
+    power3: 1
+    minSnowHeight: -0.5
+    maxSnowHeight: 2
+    isoValue: 0.5
+    chunkSize: 4
     snowMaterial: {fileID: 2100000, guid: 78111cd8357e9a34c923ffa1de63b5d1, type: 2}
+  marchingCubes: {fileID: 7200000, guid: e2fb8aef0d4ec364bb3a9edfd92c1732, type: 3}
+  chunkPrefab: {fileID: 6796282676918950698, guid: 272a1d7656ef422409679dd01de0869d, type: 3}
   snowCleared: 0
   snowRemaining: 0
 --- !u!1 &1739465742
@@ -751,8 +821,6 @@ GameObject:
   - component: {fileID: 1739465744}
   - component: {fileID: 1739465746}
   - component: {fileID: 1739465745}
-  - component: {fileID: 1739465749}
-  - component: {fileID: 1739465748}
   - component: {fileID: 1739465747}
   m_Layer: 6
   m_Name: SnowField
@@ -770,7 +838,7 @@ Transform:
   m_GameObject: {fileID: 1739465742}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalPosition: {x: 0, y: 1.4, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -788,8 +856,16 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 7a204d70b6d788d439bdcc887d3f7226, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::SnowField
-  chunkCells: 32
-  edgeFadeWidth: 1
+  chunkVoxelsPerAxis: 0
+  chunkWorldSize: 0
+  drawGizmos: 1
+  drawChunkBounds: 1
+  drawVoxels: 1
+  gizmoChunkLimit: 256
+  gizmoVoxelLimitPerChunk: 8000
+  voxelDrawSizeMultiplier: 0.35
+  drawOnlyNearCamera: 1
+  cameraMaxDistance: 5
 --- !u!114 &1739465746
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -825,35 +901,35 @@ MonoBehaviour:
       TangentIn:
         x: -0
         y: -0
-        z: -4.832017
+        z: -4.1356964
       TangentOut:
         x: 0
         y: 0
-        z: 7.535231
+        z: 5.284683
       Rotation:
         value:
-          x: 0.00000004355514
-          y: -0.101082586
-          z: 0.000000038289162
-          w: 0.99487805
+          x: 0.00000008445047
+          y: -0.04163373
+          z: 0.000000044750948
+          w: 0.999133
     - Position:
-        x: 6.635153
-        y: 0.0000038146973
-        z: 40.494812
+        x: 8.4
+        y: 0
+        z: 28.1
       TangentIn:
         x: -0
         y: -0
-        z: -6.9726877
+        z: -6.7733645
       TangentOut:
         x: 0
         y: 0
-        z: 5.341021
+        z: 6.3052015
       Rotation:
         value:
-          x: -0.000000037510386
-          y: 0.49278936
-          z: 0.000000014022558
-          w: 0.87014866
+          x: -0.000000046379334
+          y: 0.39713484
+          z: 0.000000024316606
+          w: 0.91776025
     - Position:
         x: 25.466043
         y: 0.0000038146973
@@ -861,17 +937,17 @@ MonoBehaviour:
       TangentIn:
         x: -0
         y: -0
-        z: -6.171504
+        z: -4.8796134
       TangentOut:
         x: 0
         y: 0
-        z: 6.938622
+        z: 5.509282
       Rotation:
         value:
-          x: 3.0620342e-19
-          y: 0.89187175
-          z: 1.5528271e-19
-          w: 0.4522884
+          x: -0.000000043594515
+          y: 0.80457383
+          z: 0.000000053701307
+          w: 0.5938526
     - Position:
         x: 37.337364
         y: 0.0000038146973
@@ -879,53 +955,53 @@ MonoBehaviour:
       TangentIn:
         x: -0
         y: -0
-        z: -7.619497
+        z: -6.306885
       TangentOut:
         x: 0
         y: 0
-        z: 7.716463
+        z: 4.7882814
       Rotation:
         value:
-          x: 0.0000000027954734
-          y: 0.99732083
-          z: -0.000000040840973
-          w: 0.073151566
+          x: 0.0000000016499895
+          y: 0.9994949
+          z: -0.00000007546193
+          w: 0.03177895
     - Position:
-        x: 31.960464
+        x: 32.1
         y: 0
-        z: -8.947371
+        z: 2.4
       TangentIn:
         x: -0
         y: -0
-        z: -5.4637327
+        z: -4.6167793
       TangentOut:
         x: 0
         y: 0
-        z: 4.2797194
+        z: 5.3261433
       Rotation:
         value:
-          x: -0.0000000117409344
-          y: 0.8910181
-          z: -0.00000005138152
-          w: -0.4539678
+          x: -0.000000024034138
+          y: 0.9251477
+          z: -0.000000069874844
+          w: -0.37960714
     - Position:
-        x: 16.736895
+        x: 14.9
         y: 0
-        z: -7.4713173
+        z: -4.8
       TangentIn:
         x: -0
         y: -0
-        z: -4.7243237
+        z: -4.813446
       TangentOut:
         x: 0
         y: 0
-        z: 4.254613
+        z: 3.451802
       Rotation:
         value:
-          x: -0.00000006253261
-          y: -0.59035903
-          z: -0.00000004768776
-          w: 0.80714077
+          x: 0.00000009739498
+          y: 0.71150476
+          z: 0.00000005457255
+          w: -0.70268124
     - Position:
         x: 5.965149
         y: 0.0000038146973
@@ -933,17 +1009,17 @@ MonoBehaviour:
       TangentIn:
         x: -0
         y: -0
-        z: -4.152271
+        z: -3.3564732
       TangentOut:
         x: 0
         y: 0
-        z: 4.3278584
+        z: 3.9790597
       Rotation:
         value:
-          x: 0.000000005998215
-          y: -0.4222087
-          z: -0.000000027591947
-          w: 0.9064986
+          x: -0.000000014301876
+          y: -0.45532736
+          z: -0.00000003712585
+          w: 0.89032406
     m_MetaData:
     - Mode: 0
       Tension: 0.5
@@ -991,62 +1067,6 @@ MeshCollider:
   serializedVersion: 5
   m_Convex: 0
   m_CookingOptions: 30
-  m_Mesh: {fileID: 0}
---- !u!23 &1739465748
-MeshRenderer:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1739465742}
-  m_Enabled: 1
-  m_CastShadows: 1
-  m_ReceiveShadows: 1
-  m_DynamicOccludee: 1
-  m_StaticShadowCaster: 0
-  m_MotionVectors: 1
-  m_LightProbeUsage: 1
-  m_ReflectionProbeUsage: 1
-  m_RayTracingMode: 2
-  m_RayTraceProcedural: 0
-  m_RayTracingAccelStructBuildFlagsOverride: 0
-  m_RayTracingAccelStructBuildFlags: 1
-  m_SmallMeshCulling: 1
-  m_ForceMeshLod: -1
-  m_MeshLodSelectionBias: 0
-  m_RenderingLayerMask: 1
-  m_RendererPriority: 0
-  m_Materials:
-  - {fileID: 0}
-  m_StaticBatchInfo:
-    firstSubMesh: 0
-    subMeshCount: 0
-  m_StaticBatchRoot: {fileID: 0}
-  m_ProbeAnchor: {fileID: 0}
-  m_LightProbeVolumeOverride: {fileID: 0}
-  m_ScaleInLightmap: 1
-  m_ReceiveGI: 1
-  m_PreserveUVs: 0
-  m_IgnoreNormalsForChartDetection: 0
-  m_ImportantGI: 0
-  m_StitchLightmapSeams: 1
-  m_SelectedEditorRenderState: 3
-  m_MinimumChartSize: 4
-  m_AutoUVMaxDistance: 0.5
-  m_AutoUVMaxAngle: 89
-  m_LightmapParameters: {fileID: 0}
-  m_GlobalIlluminationMeshLod: 0
-  m_SortingLayerID: 0
-  m_SortingLayer: 0
-  m_SortingOrder: 0
-  m_AdditionalVertexStreams: {fileID: 0}
---- !u!33 &1739465749
-MeshFilter:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1739465742}
   m_Mesh: {fileID: 0}
 --- !u!1 &1790752360
 GameObject:
@@ -1165,3 +1185,4 @@ SceneRoots:
   - {fileID: 963160860}
   - {fileID: 1739465744}
   - {fileID: 1529374936}
+  - {fileID: 285409773}

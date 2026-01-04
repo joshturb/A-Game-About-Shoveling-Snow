@@ -1,113 +1,42 @@
-// SnowInteractor.cs
 using UnityEngine;
 using UnityEngine.InputSystem;
 
 public class SnowInteractor : MonoBehaviour
 {
-    [Header("Aim")]
-    [SerializeField] private Camera aimCamera;
-    [SerializeField] private LayerMask aimLayerMask = ~0;
-    [SerializeField, Min(0.5f)] private float maxDistance = 20f;
+    [SerializeField] private Camera cam;
+    [SerializeField] private LayerMask snowMask = ~0;
 
-    [Header("Dig (LMB)")]
-    [SerializeField] private bool holdToDig = true;
-    [SerializeField, Min(0.01f)] private float digRadius = 0.35f;
-    [SerializeField, Range(0f, 0.99f)] private float digInnerFullClear01 = 0.75f;
-    [SerializeField, Min(0.01f)] private float digClearRate = 3.0f; // depth/sec
+    [Header("Paint")]
+    [SerializeField] private float paintRadius = 0.75f;
+    [SerializeField] private float paintStrength = 1f;
 
-    [Header("Plow (Shift + Move)")]
-    [SerializeField] private float plowHalfWidth = 0.35f;
-    [SerializeField] private float plowLength = 0.9f;
-    [SerializeField] private float plowMovePerSecond = 0.35f;
-    [SerializeField] private float depositForwardDistance = 0.6f;
-    [SerializeField, Range(0f, 0.5f)] private float sidewaysSpill = 0.15f;
+    [Header("Plow")]
+    [SerializeField] private float plowRadius = 1.0f;
+    [SerializeField] private float plowMoveAmountPerTick = 0.25f;
 
-    private SnowField[] fields;
-    private Vector3 lastPos;
-    private bool hasLast;
-
-    private void Reset()
+    private void Awake()
     {
-        aimCamera = Camera.main;
-    }
-
-    private void Start()
-    {
-        fields = FindObjectsByType<SnowField>(FindObjectsSortMode.None);
+        if (cam == null) cam = Camera.main;
     }
 
     private void Update()
     {
-        var mouse = Mouse.current;
-        var kb = Keyboard.current;
-        if (mouse == null || kb == null || aimCamera == null) return;
+        if (cam == null || Mouse.current == null)
+            return;
 
-        // --- Dig ---
-        bool digActive = holdToDig ? mouse.leftButton.isPressed : mouse.leftButton.wasPressedThisFrame;
-        if (digActive && TryGetAimPoint(out Vector3 hit))
-        {
-            if (TryGetFieldAt(hit, out SnowField field))
-            {
-                field.RemoveToZeroStamp(hit, digRadius, digInnerFullClear01, digClearRate * Time.deltaTime);
-            }
-        }
+        Ray ray = cam.ScreenPointToRay(Mouse.current.position.ReadValue());
+        if (!Physics.Raycast(ray, out RaycastHit hit, 500f, snowMask, QueryTriggerInteraction.Ignore))
+            return;
 
-        // --- Plow ---
-        bool plowing = kb.leftShiftKey.isPressed;
-        if (plowing)
-        {
-            Vector3 pos = transform.position;
-            if (hasLast)
-            {
-                Vector3 delta = pos - lastPos;
-                delta.y = 0f;
+        if (!hit.collider.transform.root.TryGetComponent(out SnowField snowField))
+            return;
 
-                if (delta.sqrMagnitude > 0.0004f)
-                {
-                    Vector3 dir = delta.normalized;
+        // LMB: add snow
+        if (Mouse.current.leftButton.isPressed && !Keyboard.current.leftShiftKey.isPressed)
+            SnowController.Instance.PaintDensity(snowField, hit.point, paintRadius, targetDensity: 1f, strength: paintStrength);
 
-                    // Use player's current position to pick the field
-                    if (TryGetFieldAt(pos, out SnowField field))
-                    {
-                        field.Plow(pos, dir, plowHalfWidth, plowLength, plowMovePerSecond * Time.deltaTime, depositForwardDistance, sidewaysSpill);
-                    }
-                }
-            }
-
-            lastPos = pos;
-            hasLast = true;
-        }
-        else
-        {
-            hasLast = false;
-        }
-    }
-
-    private bool TryGetAimPoint(out Vector3 worldPoint)
-    {
-        worldPoint = default;
-        Ray ray = aimCamera.ScreenPointToRay(Mouse.current.position.ReadValue());
-        if (Physics.Raycast(ray, out var hit, maxDistance, aimLayerMask, QueryTriggerInteraction.Ignore))
-        {
-            worldPoint = hit.point;
-            return true;
-        }
-        return false;
-    }
-
-    private bool TryGetFieldAt(Vector3 worldPos, out SnowField field)
-    {
-        field = null;
-        if (fields == null || fields.Length == 0) return false;
-
-        for (int i = 0; i < fields.Length; i++)
-        {
-            if (fields[i] != null && fields[i].ContainsWorld(worldPos))
-            {
-                field = fields[i];
-                return true;
-            }
-        }
-        return false;
+        // RMB: remove snow
+        if (Mouse.current.rightButton.isPressed)
+            SnowController.Instance.PaintDensity(snowField, hit.point, paintRadius, targetDensity: 0f, strength: paintStrength);
     }
 }
