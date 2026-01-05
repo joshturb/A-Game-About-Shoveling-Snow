@@ -1,113 +1,74 @@
-// SnowInteractor.cs
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
 public class SnowInteractor : MonoBehaviour
 {
-    [Header("Aim")]
-    [SerializeField] private Camera aimCamera;
-    [SerializeField] private LayerMask aimLayerMask = ~0;
-    [SerializeField, Min(0.5f)] private float maxDistance = 20f;
+    [Header("Raycast (Custom Snow Collider)")]
+    [SerializeField] private Camera cam;
+    [SerializeField] private float maxDistance = 500f;
 
-    [Header("Dig (LMB)")]
-    [SerializeField] private bool holdToDig = true;
-    [SerializeField, Min(0.01f)] private float digRadius = 0.35f;
-    [SerializeField, Range(0f, 0.99f)] private float digInnerFullClear01 = 0.75f;
-    [SerializeField, Min(0.01f)] private float digClearRate = 3.0f; // depth/sec
+    [Header("Edit")]
+    [SerializeField] private YEditMode mode;
+    [SerializeField] private float value;
+    [SerializeField] private float smoothness;
 
-    [Header("Plow (Shift + Move)")]
-    [SerializeField] private float plowHalfWidth = 0.35f;
-    [SerializeField] private float plowLength = 0.9f;
-    [SerializeField] private float plowMovePerSecond = 0.35f;
-    [SerializeField] private float depositForwardDistance = 0.6f;
-    [SerializeField, Range(0f, 0.5f)] private float sidewaysSpill = 0.15f;
+    [Header("Query")]
+    [SerializeField] private float radius = 0.5f;
 
-    private SnowField[] fields;
-    private Vector3 lastPos;
-    private bool hasLast;
+    private readonly List<int> _hitVerts = new(256);
+    private readonly List<SnowField> _fields = new(64);
 
-    private void Reset()
+    void Awake()
     {
-        aimCamera = Camera.main;
+        if (cam == null) cam = Camera.main;
+        RefreshFields();
     }
 
-    private void Start()
+    void OnEnable() => RefreshFields();
+
+    private void RefreshFields()
     {
-        fields = FindObjectsByType<SnowField>(FindObjectsSortMode.None);
+        _fields.Clear();
+        var found = Object.FindObjectsByType<SnowField>(FindObjectsSortMode.None);
+        for (int i = 0; i < found.Length; i++)
+            if (found[i] != null) _fields.Add(found[i]);
     }
 
-    private void Update()
+    void Update()
     {
-        var mouse = Mouse.current;
-        var kb = Keyboard.current;
-        if (mouse == null || kb == null || aimCamera == null) return;
+        if (cam == null) return;
+        if (!Mouse.current.leftButton.wasPressedThisFrame) return;
 
-        // --- Dig ---
-        bool digActive = holdToDig ? mouse.leftButton.isPressed : mouse.leftButton.wasPressedThisFrame;
-        if (digActive && TryGetAimPoint(out Vector3 hit))
+        Ray ray = cam.ScreenPointToRay(Mouse.current.position.ReadValue());
+
+        SnowField best = null;
+        SnowHeightfieldCollider.Hit bestHit = default;
+        float bestDist = float.PositiveInfinity;
+
+        for (int i = 0; i < _fields.Count; i++)
         {
-            if (TryGetFieldAt(hit, out SnowField field))
-            {
-                field.RemoveToZeroStamp(hit, digRadius, digInnerFullClear01, digClearRate * Time.deltaTime);
-            }
-        }
+            var f = _fields[i];
+            if (f == null) continue;
 
-        // --- Plow ---
-        bool plowing = kb.leftShiftKey.isPressed;
-        if (plowing)
-        {
-            Vector3 pos = transform.position;
-            if (hasLast)
+            if (f.RaycastSnow(ray, out var h, maxDistance))
             {
-                Vector3 delta = pos - lastPos;
-                delta.y = 0f;
-
-                if (delta.sqrMagnitude > 0.0004f)
+                if (h.distanceWorld < bestDist)
                 {
-                    Vector3 dir = delta.normalized;
-
-                    // Use player's current position to pick the field
-                    if (TryGetFieldAt(pos, out SnowField field))
-                    {
-                        field.Plow(pos, dir, plowHalfWidth, plowLength, plowMovePerSecond * Time.deltaTime, depositForwardDistance, sidewaysSpill);
-                    }
+                    bestDist = h.distanceWorld;
+                    best = f;
+                    bestHit = h;
                 }
             }
-
-            lastPos = pos;
-            hasLast = true;
         }
-        else
-        {
-            hasLast = false;
-        }
-    }
 
-    private bool TryGetAimPoint(out Vector3 worldPoint)
-    {
-        worldPoint = default;
-        Ray ray = aimCamera.ScreenPointToRay(Mouse.current.position.ReadValue());
-        if (Physics.Raycast(ray, out var hit, maxDistance, aimLayerMask, QueryTriggerInteraction.Ignore))
-        {
-            worldPoint = hit.point;
-            return true;
-        }
-        return false;
-    }
+        if (best == null || best._tree == null)
+            return;
 
-    private bool TryGetFieldAt(Vector3 worldPos, out SnowField field)
-    {
-        field = null;
-        if (fields == null || fields.Length == 0) return false;
+        Vector3 localPoint = best.transform.InverseTransformPoint(bestHit.pointWorld);
 
-        for (int i = 0; i < fields.Length; i++)
-        {
-            if (fields[i] != null && fields[i].ContainsWorld(worldPos))
-            {
-                field = fields[i];
-                return true;
-            }
-        }
-        return false;
+        _hitVerts.Clear();
+        best._tree.QuerySphere(localPoint, radius, _hitVerts);
+        best.EditY(_hitVerts, value, mode, smoothness);
     }
 }

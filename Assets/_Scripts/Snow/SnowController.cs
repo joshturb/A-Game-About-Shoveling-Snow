@@ -1,10 +1,10 @@
 using UnityEngine;
-using UnityEngine.Splines;
 
 [System.Serializable]
 public struct SnowSettings
 {
-    public float snowDetail;
+    public int snowDetail;
+    public int smoothingIterations;
 
     public FastNoiseLite.NoiseType noiseType;
     public FastNoiseLite.FractalType fractalType;
@@ -21,7 +21,7 @@ public struct SnowSettings
 
     public static SnowSettings Default => new()
     {
-        snowDetail = 0.25f,
+        snowDetail = 1,
         noiseType = FastNoiseLite.NoiseType.OpenSimplex2,
         fractalType = FastNoiseLite.FractalType.FBm,
         fractalOctaves = 5,
@@ -52,7 +52,6 @@ public class SnowController : MonoBehaviour
  
     // Private Variables
     private FastNoiseLite noise;
-    private SnowField[] snowFields;
 
     void Awake()
     {
@@ -74,16 +73,7 @@ public class SnowController : MonoBehaviour
         noise.SetFrequency(1f / Mathf.Max(0.0001f, snowSettings.scale));
     }
 
-    void Start()
-    {
-        snowFields = FindObjectsByType<SnowField>(FindObjectsSortMode.None);
-        foreach (var item in snowFields)
-        {
-            item.Initialize();
-        }
-    }
-
-    public float SampleWorld(Vector3 worldPos)
+    public float SampleNoise(Vector3 worldPos)
     {
         float n = noise.GetNoise(worldPos.x, worldPos.z);     // sample directly in world units
         float t = Mathf.Clamp01(n * 0.5f + 0.5f);            // map [-1..1] -> [0..1] (safe even if overshoot)
