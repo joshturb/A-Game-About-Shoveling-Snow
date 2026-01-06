@@ -1,20 +1,19 @@
+// SnowInteractor.cs
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
 public class SnowInteractor : MonoBehaviour
 {
-    [Header("Raycast (Custom Snow Collider)")]
+    [Header("Ray")]
     [SerializeField] private Camera cam;
     [SerializeField] private float maxDistance = 500f;
 
-    [Header("Edit")]
-    [SerializeField] private YEditMode mode;
-    [SerializeField] private float value;
-    [SerializeField] private float smoothness;
-
-    [Header("Query")]
+    [Header("Brush")]
     [SerializeField] private float radius = 0.5f;
+    [SerializeField] private YEditMode mode = YEditMode.Add;
+    [SerializeField] private float value = 0.05f;
+    [SerializeField] private float smoothness = 0f;
 
     private readonly List<int> _hitVerts = new(256);
     private readonly List<SnowField> _fields = new(64);
@@ -51,24 +50,20 @@ public class SnowInteractor : MonoBehaviour
             var f = _fields[i];
             if (f == null) continue;
 
-            if (f.RaycastSnow(ray, out var h, maxDistance))
+            if (f.RaycastSnow(ray, out var h, maxDistance) && h.distanceWorld < bestDist)
             {
-                if (h.distanceWorld < bestDist)
-                {
-                    bestDist = h.distanceWorld;
-                    best = f;
-                    bestHit = h;
-                }
+                bestDist = h.distanceWorld;
+                best = f;
+                bestHit = h;
             }
         }
 
-        if (best == null || best._tree == null)
-            return;
+        if (best == null) return;
 
         Vector3 localPoint = best.transform.InverseTransformPoint(bestHit.pointWorld);
 
         _hitVerts.Clear();
-        best._tree.QuerySphere(localPoint, radius, _hitVerts);
-        best.EditY(_hitVerts, value, mode, smoothness);
+        best.QueryBrush(localPoint, radius, _hitVerts);
+        best.EditY(_hitVerts, localPoint, radius, value, mode, smoothness);
     }
 }

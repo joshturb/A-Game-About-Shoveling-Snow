@@ -1,3 +1,4 @@
+// SnowField.cs
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -7,40 +8,39 @@ public enum YEditMode { Set, Add, Subtract }
 [RequireComponent(typeof(MeshRenderer))]
 public class SnowField : MonoBehaviour
 {
-    private MeshRenderer meshRenderer;
-    private MeshFilter meshFilter;
+    [Header("Octree")]
+    public int maxDepth = 10;
+    public int maxPerLeaf = 32;
 
-    private Mesh _mesh;                 // single instanced mesh we edit
-    public VertexOctree _tree;
+    private MeshFilter _mf;
+    private Mesh _mesh;
 
-    private SnowHeightfieldCollider _hf; // custom “collider” (raycast + contains)
+    public VertexOctree Tree { get; private set; }
+    private SnowHeightfieldCollider _hf;
 
     void Awake()
     {
-        meshRenderer = GetComponent<MeshRenderer>();
-        meshFilter = GetComponent<MeshFilter>();
+        _mf = GetComponent<MeshFilter>();
 
-        _mesh = meshFilter.mesh; // instance once
+        _mesh = _mf.mesh;          // instantiate once
         _mesh.MarkDynamic();
     }
 
     void Start()
     {
-        // Build once (XZ-based version)
-        _tree = new VertexOctree(_mesh, maxDepth: 10, maxPerLeaf: 32);
-        SnowUtils.InferGridDims(_mesh, out int w, out int h);
+        Tree = new VertexOctree(_mesh, maxDepth, maxPerLeaf);
         _hf = new SnowHeightfieldCollider(transform, _mesh);
 
-        Snow();
+        ApplyInitialSnow();
     }
 
-    private void Snow()
+    private void ApplyInitialSnow()
     {
-        var verts = _mesh.vertices;
-        for (int i = 0; i < verts.Length; i++)
-            verts[i].y = SnowController.Instance.SampleNoise(verts[i]);
+        var v = _mesh.vertices;
+        for (int i = 0; i < v.Length; i++)
+            v[i].y = SnowController.Instance.SampleNoise(v[i]);
 
-        _mesh.vertices = verts;
+        _mesh.vertices = v;
         ApplyMeshChanges();
     }
 
@@ -49,74 +49,69 @@ public class SnowField : MonoBehaviour
         _mesh.RecalculateNormals();
         _mesh.RecalculateBounds();
 
-        // No rebuild needed (XZ tree). Just refresh vertex reference for query filtering.
-        _tree.RefreshVertices(_mesh);
-
-        // Custom collider uses current verts
+        Tree.RefreshVertices(_mesh);
         _hf.Refresh();
     }
 
-    public bool RaycastSnow(Ray worldRay, out SnowHeightfieldCollider.Hit hit, float maxDistance = 1000f)
+    public bool RaycastSnow(Ray worldRay, out SnowHeightfieldCollider.Hit hit, float maxDistance = 500f)
         => _hf.Raycast(worldRay, out hit, maxDistance);
 
     public bool ContainsPoint(Vector3 worldPoint)
         => _hf.ContainsPoint(worldPoint);
 
-    public void EditY(List<int> indexes, float value, YEditMode mode, float smoothness = 0f)
+    public void QueryBrush(Vector3 hitLocal, float radius, List<int> results)
     {
-        if (indexes == null || indexes.Count == 0) return;
+        hitLocal.y = 0f;
+        Tree.QuerySphere(hitLocal, radius, results);
+    }
+
+    public void EditY(List<int> indices, Vector3 hitLocal, float radius, float value, YEditMode mode, float smoothness = 0f)
+    {
+        if (indices == null || indices.Count == 0) return;
 
         var verts = _mesh.vertices;
 
-        Vector3 center = Vector3.zero;
-        for (int k = 0; k < indexes.Count; k++) center += verts[indexes[k]];
-        center /= Mathf.Max(1, indexes.Count);
-
-        float maxDist = 0f;
-        for (int k = 0; k < indexes.Count; k++)
-            maxDist = Mathf.Max(maxDist, Vector3.Distance(center, verts[indexes[k]]));
-        if (maxDist <= 1e-6f) maxDist = 1f;
-
-        // Exact old behavior: smoothness <= 0 => uniform edit (like original separate funcs)
         if (smoothness <= 0f)
         {
-            for (int k = 0; k < indexes.Count; k++)
+            for (int k = 0; k < indices.Count; k++)
             {
-                int i = indexes[k];
+                int i = indices[k];
                 switch (mode)
                 {
                     case YEditMode.Set:      verts[i].y = value; break;
                     case YEditMode.Add:      verts[i].y += value; break;
                     case YEditMode.Subtract: verts[i].y -= value; break;
                 }
+                verts[i].y = Mathf.Max(0, verts[i].y);
             }
-
-            _mesh.vertices = verts;
-            ApplyMeshChanges();
-            return;
         }
-
-        for (int k = 0; k < indexes.Count; k++)
+        else
         {
-            int i = indexes[k];
+            hitLocal.y = 0f;
 
-            float t = 1f - (Vector3.Distance(center, verts[i]) / maxDist);
-            t = Mathf.Clamp01(t);
-            t = Mathf.Pow(t, smoothness);
+            float r = Mathf.Max(1e-6f, radius);
+            float invR = 1f / r;
 
-            switch (mode)
+            float cx = hitLocal.x;
+            float cz = hitLocal.z;
+
+            for (int k = 0; k < indices.Count; k++)
             {
-                case YEditMode.Set:
-                    verts[i].y = Mathf.Lerp(verts[i].y, value, t);
-                    break;
+                int i = indices[k];
 
-                case YEditMode.Add:
-                    verts[i].y += value * t;
-                    break;
+                float dx = verts[i].x - cx;
+                float dz = verts[i].z - cz;
 
-                case YEditMode.Subtract:
-                    verts[i].y -= value * t;
-                    break;
+                float t = 1f - Mathf.Clamp01(Mathf.Sqrt(dx * dx + dz * dz) * invR);
+                t = Mathf.Pow(t, smoothness);
+
+                switch (mode)
+                {
+                    case YEditMode.Set:      verts[i].y = Mathf.Lerp(verts[i].y, value, t); break;
+                    case YEditMode.Add:      verts[i].y += value * t; break;
+                    case YEditMode.Subtract: verts[i].y -= value * t; break;
+                }
+                verts[i].y = Mathf.Max(0f, verts[i].y);
             }
         }
 
