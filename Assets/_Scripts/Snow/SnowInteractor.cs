@@ -3,67 +3,68 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
-public class SnowInteractor : MonoBehaviour
-{
-    [Header("Ray")]
-    [SerializeField] private Camera cam;
-    [SerializeField] private float maxDistance = 500f;
+public enum YEditMode { Set, Add, Subtract }
+public enum EditShape { Bounds, Sphere}
 
-    [Header("Brush")]
-    [SerializeField] private float radius = 0.5f;
+public abstract class SnowInteractor : MonoBehaviour
+{
+    public RuntimeAnimatorController overrideController;
+    private SnowField snowField;
+
+    [Header("Ray")]
+    [SerializeField] private float distance = 5f;
+    [SerializeField] private EditShape shape = EditShape.Bounds;
     [SerializeField] private YEditMode mode = YEditMode.Add;
+
+    [Header("Sphere")]
+    [SerializeField] private float sphereRadius = 0.5f;
+    [Header("Bounds")]
+    [SerializeField] private Collider boundsCollider;
     [SerializeField] private float value = 0.05f;
-    [SerializeField] private float smoothness = 0f;
+    [SerializeField] private float smoothness = 1f;
 
     private readonly List<int> _hitVerts = new(256);
     private readonly List<SnowField> _fields = new(64);
 
-    void Awake()
+    public virtual void Awake()
     {
-        if (cam == null) cam = Camera.main;
-        RefreshFields();
+        snowField = FindFirstObjectByType<SnowField>();
     }
 
-    void OnEnable() => RefreshFields();
-
-    private void RefreshFields()
+    public virtual void Edit()
     {
-        _fields.Clear();
-        var found = Object.FindObjectsByType<SnowField>(FindObjectsSortMode.None);
-        for (int i = 0; i < found.Length; i++)
-            if (found[i] != null) _fields.Add(found[i]);
-    }
+        if (Camera.main == null) return;
+        if (Mouse.current == null) return;
 
-    void Update()
-    {
-        if (cam == null) return;
-        if (!Mouse.current.leftButton.wasPressedThisFrame) return;
+        if (snowField == null)
+            snowField = FindFirstObjectByType<SnowField>();
 
-        Ray ray = cam.ScreenPointToRay(Mouse.current.position.ReadValue());
+        if (snowField == null) return;
 
-        SnowField best = null;
-        SnowHeightfieldCollider.Hit bestHit = default;
-        float bestDist = float.PositiveInfinity;
+        Ray ray = Camera.main.ScreenPointToRay(Mouse.current.position.ReadValue());
 
-        for (int i = 0; i < _fields.Count; i++)
+        if (shape == EditShape.Sphere)
         {
-            var f = _fields[i];
-            if (f == null) continue;
+            if (!snowField.RaycastSnow(ray, out var h, distance))
+                return;
 
-            if (f.RaycastSnow(ray, out var h, maxDistance) && h.distanceWorld < bestDist)
-            {
-                bestDist = h.distanceWorld;
-                best = f;
-                bestHit = h;
-            }
+            Vector3 localPoint = snowField.transform.InverseTransformPoint(h.pointWorld);
+
+            _hitVerts.Clear();
+            snowField.QuerySphere(localPoint, sphereRadius, _hitVerts);
+            snowField.EditY(_hitVerts, localPoint, sphereRadius, value, mode, smoothness);
+            return;
         }
 
-        if (best == null) return;
+        if (boundsCollider == null) return;
 
-        Vector3 localPoint = best.transform.InverseTransformPoint(bestHit.pointWorld);
+        Vector3 worldCenter = boundsCollider.bounds.center;
+        Vector3 localCenter = snowField.transform.InverseTransformPoint(worldCenter);
 
         _hitVerts.Clear();
-        best.QueryBrush(localPoint, radius, _hitVerts);
-        best.EditY(_hitVerts, localPoint, radius, value, mode, smoothness);
+        var b = boundsCollider.bounds;
+        snowField.QueryBounds(b, _hitVerts);
+        float boundsRadius = Mathf.Max(b.extents.x, b.extents.z);
+        snowField.EditY(_hitVerts, localCenter, boundsRadius, value, mode, smoothness);
     }
 }

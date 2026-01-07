@@ -1,0 +1,15 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!221 &22100000
+AnimatorOverrideController:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: Shovel
+  m_Controller: {fileID: 9100000, guid: ab5fdcb65ee9a0e409a43bc33531297f, type: 2}
+  m_Clips:
+  - m_OriginalClip: {fileID: 7400000, guid: 38a7f7e3d11b17c4eb4e207363075a10, type: 2}
+    m_OverrideClip: {fileID: 7400000, guid: 03a4f418d0be82f43b5e907ddd841c34, type: 2}
+  - m_OriginalClip: {fileID: 7400000, guid: 57de91c7d43735b4c9a9f55eac402af5, type: 2}
+    m_OverrideClip: {fileID: 7400000, guid: 60d0efcba1ff37044b9a3a1a725ec70b, type: 2}

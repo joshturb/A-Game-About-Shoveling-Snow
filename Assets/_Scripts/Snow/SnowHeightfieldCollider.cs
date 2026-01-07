@@ -38,9 +38,9 @@ public sealed class SnowHeightfieldCollider
         BuildIndex();
     }
 
-    public void Refresh()
+    public void Refresh(Vector3[] verts)
     {
-        _verts = _mesh.vertices ?? throw new InvalidOperationException("Mesh has no vertices.");
+        _verts = verts ?? throw new InvalidOperationException("Mesh has no vertices.");
     }
 
     public bool ContainsPoint(Vector3 worldPoint)

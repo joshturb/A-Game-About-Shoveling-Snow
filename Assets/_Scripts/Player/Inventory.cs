@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.InputSystem;
@@ -21,6 +22,8 @@ public class Inventory : MonoBehaviour
 
     private GameObject spawnedInstance;
 
+    public event Action<SnowInteractor> OnItemEquip;
+    public event Action OnItemDequip;
     public int MaxSlots => Mathf.Clamp(maxSlots, 1, 5);
     public int SelectedSlot => selectedSlot;
 
@@ -159,9 +162,12 @@ public class Inventory : MonoBehaviour
         Quaternion rot = spawnPoint ? spawnPoint.rotation : transform.rotation;
 
         spawnedInstance = Instantiate(item.prefab, pos, rot);
+        spawnedInstance.name = item.prefab.name;
 
         if (spawnParent != null)
             spawnedInstance.transform.SetParent(spawnParent, keepWorldPosition);
+
+        OnItemEquip?.Invoke(spawnedInstance.GetComponent<SnowInteractor>());
     }
 
     private void DespawnCurrent()
@@ -170,6 +176,7 @@ public class Inventory : MonoBehaviour
         {
             Destroy(spawnedInstance);
             spawnedInstance = null;
+            OnItemDequip?.Invoke();
         }
     }
 }

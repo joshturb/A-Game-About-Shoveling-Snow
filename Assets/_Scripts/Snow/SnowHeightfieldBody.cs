@@ -24,6 +24,24 @@ public class SnowHeightfieldBody : MonoBehaviour
     [SerializeField] private bool alignToNormal = true;
     [SerializeField, Min(0f)] private float alignSpeed = 12f;
 
+    [Header("Normal Sampling (4 Corners)")]
+    [Tooltip("XZ half-size of the 4-corner sample square (world units). If 0, uses radius.")]
+    [SerializeField, Min(0f)] private float normalSampleRadius = 0f;
+
+    [Header("Upright Clamp")]
+    [SerializeField, Min(0f)] private float maxAlignTiltDegrees = 65f;
+    [SerializeField, Min(0f)] private float uprightSpeed = 10f;
+
+    [Header("Stop Align When Still")]
+    [Tooltip("If XZ speed rises above this, alignment is enabled.")]
+    [SerializeField, Min(0f)] private float alignStartSpeedXZ = 0.35f;
+    [Tooltip("If XZ speed falls below this, alignment is disabled (hysteresis).")]
+    [SerializeField, Min(0f)] private float alignStopSpeedXZ = 0.20f;
+    [Tooltip("When not aligning, damp angular velocity to prevent rocking.")]
+    [SerializeField, Range(0f, 1f)] private float stillAngularDamping = 0.25f;
+    [Tooltip("Extra smoothing on the averaged normal to reduce chatter.")]
+    [SerializeField, Min(0f)] private float normalSmoothSpeed = 10f;
+
     [Header("Field Selection")]
     [Tooltip("Extra meters added to field bounds check in XZ to reduce misses.")]
     [SerializeField, Min(0f)] private float boundsPadding = 2f;
@@ -37,7 +55,6 @@ public class SnowHeightfieldBody : MonoBehaviour
         public Mesh meshRef;
         public SnowHeightfieldCollider col;
 
-        // Cached world AABB (XZ only used)
         public Vector3 worldMin;
         public Vector3 worldMax;
     }
@@ -45,7 +62,10 @@ public class SnowHeightfieldBody : MonoBehaviour
     private FieldCol[] fieldCols;
     private int lastFieldIndex = -1;
 
-    private void Awake()
+    private bool doAlign;
+    private Vector3 smoothedNormal = Vector3.up;
+
+    private void Start()
     {
         rb = GetComponent<Rigidbody>();
 
@@ -69,11 +89,14 @@ public class SnowHeightfieldBody : MonoBehaviour
                 field = f,
                 mf = mf,
                 meshRef = mesh,
-                col = new SnowHeightfieldCollider(f.transform, mesh),
+                col = f._hf
             };
 
             CacheWorldBounds(i);
         }
+
+        doAlign = true;
+        smoothedNormal = Vector3.up;
     }
 
     private void FixedUpdate()
@@ -84,7 +107,6 @@ public class SnowHeightfieldBody : MonoBehaviour
         ref FieldCol fc = ref fieldCols[fi];
         if (fc.field == null || fc.mf == null) return;
 
-        // Re-cache bounds if we changed fields (cheap, avoids stale bounds if fields move)
         if (fi != lastFieldIndex)
         {
             CacheWorldBounds(fi);
@@ -94,7 +116,6 @@ public class SnowHeightfieldBody : MonoBehaviour
         Mesh mesh = fc.mf.sharedMesh;
         if (mesh == null) return;
 
-        // Rebuild collider ONLY if the mesh reference changed (regenerated)
         if (fc.col == null || fc.meshRef != mesh)
         {
             fc.meshRef = mesh;
@@ -102,8 +123,7 @@ public class SnowHeightfieldBody : MonoBehaviour
         }
         else
         {
-            // Non-alloc refresh (requires the collider patch below)
-            fc.col.Refresh();
+            fc.col.Refresh(fc.field.GetVerts());
         }
 
         Vector3 pos = rb.position;
@@ -112,12 +132,10 @@ public class SnowHeightfieldBody : MonoBehaviour
         bool falling = Vector3.Dot(vel, Vector3.up) <= 0f;
         if (onlyWhenFalling && !falling)
         {
-            // Still correct if already penetrating
             if (!IsPenetrating(fc.col, pos))
                 return;
         }
 
-        // Probe down
         Vector3 probeOrigin = pos + Vector3.up * probeUp;
         Ray r = new Ray(probeOrigin, Vector3.down);
 
@@ -132,9 +150,25 @@ public class SnowHeightfieldBody : MonoBehaviour
         pos.y += penetration;
         rb.MovePosition(pos);
 
-        Vector3 n = hit.normalWorld.sqrMagnitude > 1e-6f ? hit.normalWorld.normalized : Vector3.up;
+        // --- stop alignment when still (XZ speed hysteresis) ---
+        Vector3 velXZ = new Vector3(vel.x, 0f, vel.z);
+        float speedXZ = velXZ.magnitude;
 
-        AlignRotationToNormal(n);
+        if (doAlign)
+            doAlign = speedXZ > alignStopSpeedXZ;
+        else
+            doAlign = speedXZ >= alignStartSpeedXZ;
+
+        // 4-corner averaged normal around the hit point (XZ)
+        Vector3 n = GetAveragedCornerNormal(fc.col, hit.pointWorld);
+
+        // Smooth the normal to reduce chatter (only really matters when aligning).
+        float aN = 1f - Mathf.Exp(-normalSmoothSpeed * Time.fixedDeltaTime);
+        smoothedNormal = Vector3.Slerp(smoothedNormal, n, aN);
+        if (smoothedNormal.sqrMagnitude < 1e-6f) smoothedNormal = Vector3.up;
+        smoothedNormal.Normalize();
+
+        AlignRotationToNormal(smoothedNormal, doAlign);
 
         float vn = Vector3.Dot(vel, n);
         if (vn < 0f)
@@ -149,14 +183,64 @@ public class SnowHeightfieldBody : MonoBehaviour
         rb.linearVelocity = vel;
     }
 
+    private Vector3 GetAveragedCornerNormal(SnowHeightfieldCollider col, Vector3 centerWorld)
+    {
+        float s = normalSampleRadius > 0f ? normalSampleRadius : radius;
+
+        Vector3 sum = Vector3.zero;
+        int count = 0;
+
+        Vector3 o0 = new Vector3(-s, 0f, -s);
+        Vector3 o1 = new Vector3(-s, 0f,  s);
+        Vector3 o2 = new Vector3( s, 0f, -s);
+        Vector3 o3 = new Vector3( s, 0f,  s);
+
+        Vector3 up = Vector3.up * probeUp;
+        float len = probeUp + probeDown;
+
+        SampleCorner(col, centerWorld + o0, up, len, ref sum, ref count);
+        SampleCorner(col, centerWorld + o1, up, len, ref sum, ref count);
+        SampleCorner(col, centerWorld + o2, up, len, ref sum, ref count);
+        SampleCorner(col, centerWorld + o3, up, len, ref sum, ref count);
+
+        if (count == 0)
+            return Vector3.up;
+
+        Vector3 n = sum / count;
+        if (n.sqrMagnitude < 1e-6f)
+            n = Vector3.up;
+
+        n.Normalize();
+        if (Vector3.Dot(n, Vector3.up) < 0f) n = -n;
+        return n;
+    }
+
+    private static void SampleCorner(
+        SnowHeightfieldCollider col,
+        Vector3 cornerWorld,
+        Vector3 upOffset,
+        float rayLength,
+        ref Vector3 normalSum,
+        ref int count)
+    {
+        Ray rr = new Ray(cornerWorld + upOffset, Vector3.down);
+        if (!col.Raycast(rr, out var h, rayLength))
+            return;
+
+        Vector3 n = h.normalWorld;
+        if (n.sqrMagnitude < 1e-6f)
+            return;
+
+        normalSum += n.normalized;
+        count++;
+    }
+
     private void CacheWorldBounds(int i)
     {
         ref FieldCol fc = ref fieldCols[i];
         if (fc.field == null || fc.mf == null || fc.mf.sharedMesh == null) return;
 
-        // Transform mesh local bounds to world AABB (safe even if rotated, via 8 corners)
         Bounds b = fc.mf.sharedMesh.bounds;
-
         Transform t = fc.field.transform;
 
         Vector3 c = b.center;
@@ -190,14 +274,12 @@ public class SnowHeightfieldBody : MonoBehaviour
 
     private int FindFieldIndexFast(Vector3 worldPos)
     {
-        // First: try last field (best case)
         if (lastFieldIndex >= 0 && lastFieldIndex < fieldCols.Length)
         {
             if (WithinXZ(ref fieldCols[lastFieldIndex], worldPos))
                 return lastFieldIndex;
         }
 
-        // Next: cheap bounds filter in XZ
         for (int i = 0; i < fieldCols.Length; i++)
         {
             if (fieldCols[i].field == null) continue;
@@ -225,9 +307,30 @@ public class SnowHeightfieldBody : MonoBehaviour
         return col.ContainsPoint(bottom);
     }
 
-    private void AlignRotationToNormal(Vector3 normalWorld)
+    private void AlignRotationToNormal(Vector3 normalWorld, bool allowAlignNow)
     {
         if (!alignToNormal) return;
+
+        // Always handle extreme tilt: go upright and kill rocking.
+        float tilt = Vector3.Angle(rb.rotation * Vector3.up, Vector3.up);
+        if (tilt > maxAlignTiltDegrees)
+        {
+            Quaternion upright = Quaternion.Euler(0f, rb.rotation.eulerAngles.y, 0f);
+            Quaternion blendedUpright = Quaternion.Slerp(
+                rb.rotation,
+                upright,
+                1f - Mathf.Exp(-uprightSpeed * Time.fixedDeltaTime)
+            );
+            rb.MoveRotation(blendedUpright);
+            return;
+        }
+
+        // When still: do NOT chase normals; just damp angular velocity to stop rocking.
+        if (!allowAlignNow)
+        {
+            rb.angularVelocity *= stillAngularDamping;
+            return;
+        }
 
         Vector3 n = normalWorld.sqrMagnitude > 1e-6f ? normalWorld.normalized : Vector3.up;
         if (Vector3.Dot(n, Vector3.up) < 0f) n = -n;

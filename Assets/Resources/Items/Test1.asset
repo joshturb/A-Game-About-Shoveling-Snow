@@ -14,4 +14,4 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::InventoryItem
   itemId: Shovel
   icon: {fileID: 10913, guid: 0000000000000000f000000000000000, type: 0}
-  prefab: {fileID: 8350132662639343946, guid: aba81072ffdcc0145a224bf5e3c5de9e, type: 3}
+  prefab: {fileID: 4763416999628106865, guid: 8f5b4a43453e0de43b619af89076e920, type: 3}

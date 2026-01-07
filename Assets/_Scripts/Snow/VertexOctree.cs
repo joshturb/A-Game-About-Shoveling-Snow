@@ -39,12 +39,7 @@ public sealed class VertexOctree
         RebuildFromMesh(mesh);
     }
 
-    public void RefreshVertices(Mesh mesh)
-    {
-        if (mesh == null) throw new ArgumentNullException(nameof(mesh));
-        _verts = mesh.vertices ?? throw new InvalidOperationException("Mesh has no vertices.");
-        // No rebuild needed as long as X/Z don't change.
-    }
+   // public void RefreshVertices(Vector3[] verts) { _verts = verts ?? throw new ArgumentNullException(nameof(verts)); }
 
     public void RebuildFromMesh(Mesh mesh)
     {
@@ -177,5 +172,58 @@ public sealed class VertexOctree
 
         for (int i = 0; i < 4; i++)
             QueryInternal(node.children[i], aabb, cx, cz, r2, results);
+    }
+
+    public void QueryBounds(Transform meshTransform, Vector3 worldCenter, Vector2 halfExtentsXZ, List<int> results)
+    {
+        if (meshTransform == null) throw new ArgumentNullException(nameof(meshTransform));
+        if (results == null) throw new ArgumentNullException(nameof(results));
+        results.Clear();
+
+        // 4 world corners in XZ
+        Vector3 c = worldCenter;
+        Vector3[] wc =
+        {
+            new Vector3(c.x - halfExtentsXZ.x, c.y, c.z - halfExtentsXZ.y),
+            new Vector3(c.x - halfExtentsXZ.x, c.y, c.z + halfExtentsXZ.y),
+            new Vector3(c.x + halfExtentsXZ.x, c.y, c.z - halfExtentsXZ.y),
+            new Vector3(c.x + halfExtentsXZ.x, c.y, c.z + halfExtentsXZ.y),
+        };
+
+        // Convert to local and encapsulate
+        Bounds local = new Bounds(meshTransform.InverseTransformPoint(wc[0]), Vector3.zero);
+        for (int i = 1; i < 4; i++)
+            local.Encapsulate(meshTransform.InverseTransformPoint(wc[i]));
+
+        // XZ-only query slab
+        local.center = new Vector3(local.center.x, 0f, local.center.z);
+        local.size   = new Vector3(local.size.x, HUGE_Y * 2f, local.size.z);
+
+        QueryBoundsInternal(Root, local, results);
+    }
+
+    private void QueryBoundsInternal(Node node, Bounds query, List<int> results)
+    {
+        if (node == null) return;
+        if (!node.bounds.Intersects(query)) return;
+
+        if (node.IsLeaf)
+        {
+            float minX = query.min.x, maxX = query.max.x;
+            float minZ = query.min.z, maxZ = query.max.z;
+
+            for (int i = 0; i < node.indices.Count; i++)
+            {
+                int vi = node.indices[i];
+                Vector3 p = _verts[vi];
+
+                if (p.x >= minX && p.x <= maxX && p.z >= minZ && p.z <= maxZ)
+                    results.Add(vi);
+            }
+            return;
+        }
+        Debug.Log($"{results.Count}");
+        for (int i = 0; i < 4; i++)
+            QueryBoundsInternal(node.children[i], query, results);
     }
 }

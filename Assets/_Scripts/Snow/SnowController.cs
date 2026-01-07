@@ -52,6 +52,8 @@ public class SnowController : MonoBehaviour
  
     // Private Variables
     private FastNoiseLite noise;
+    private int totalVerts;
+    private int clearedVerts;
 
     void Awake()
     {
@@ -80,4 +82,23 @@ public class SnowController : MonoBehaviour
         return Mathf.Lerp(snowSettings.minHeight, snowSettings.maxHeight, t);
     }
 
+    public void RegisterField(int vertexCount, int initialClearedCount)
+    {
+        totalVerts += vertexCount;
+        clearedVerts += initialClearedCount;
+    }
+
+    public void ApplyClearedDelta(int deltaCleared)
+    {
+        clearedVerts = Mathf.Clamp(clearedVerts + deltaCleared, 0, totalVerts);
+    }
+
+    public float GetClearedPercent()
+        => totalVerts == 0 ? 0f : clearedVerts / (float)totalVerts * 100f;
+
+    [ContextMenu("cleared%")]
+    public void test()
+    {
+        print(GetClearedPercent());
+    }
 }
