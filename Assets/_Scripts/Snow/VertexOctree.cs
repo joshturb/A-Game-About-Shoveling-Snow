@@ -132,7 +132,6 @@ public sealed class VertexOctree
         }
     }
 
-    /// Query in XZ (circle), ignores Y. Kept name QuerySphere for compatibility.
     public void QuerySphere(Vector3 center, float radius, List<int> results)
     {
         if (results == null) throw new ArgumentNullException(nameof(results));
@@ -141,16 +140,23 @@ public sealed class VertexOctree
         float r = Mathf.Max(0f, radius);
         float r2 = r * r;
 
-        // AABB in XZ, huge Y
+        float yMin = center.y - r;
+        yMin = Mathf.Max(yMin, -HUGE_Y);
+
+        // Broadphase AABB: XZ radius, Y from yMin up to +HUGE_Y
+        float yMax = HUGE_Y;
+        float yCenter = (yMin + yMax) * 0.5f;
+        float ySize   = (yMax - yMin);
+
         var aabb = new Bounds(
-            new Vector3(center.x, 0f, center.z),
-            new Vector3(r * 2f, HUGE_Y * 2f, r * 2f)
+            new Vector3(center.x, yCenter, center.z),
+            new Vector3(r * 2f, ySize, r * 2f)
         );
 
-        QueryInternal(Root, aabb, center.x, center.z, r2, results);
+        QueryInternal(Root, aabb, center.x, center.z, yMin, r2, results);
     }
 
-    private void QueryInternal(Node node, Bounds aabb, float cx, float cz, float r2, List<int> results)
+    private void QueryInternal(Node node, Bounds aabb, float cx, float cz, float yMin, float r2, List<int> results)
     {
         if (node == null) return;
         if (!node.bounds.Intersects(aabb)) return;
@@ -162,6 +168,8 @@ public sealed class VertexOctree
                 int vi = node.indices[i];
                 Vector3 p = _verts[vi];
 
+                if (p.y < yMin) continue;   // ignore lower Y only
+
                 float dx = p.x - cx;
                 float dz = p.z - cz;
                 if ((dx * dx + dz * dz) <= r2)
@@ -171,33 +179,36 @@ public sealed class VertexOctree
         }
 
         for (int i = 0; i < 4; i++)
-            QueryInternal(node.children[i], aabb, cx, cz, r2, results);
+            QueryInternal(node.children[i], aabb, cx, cz, yMin, r2, results);
     }
 
-    public void QueryBounds(Transform meshTransform, Vector3 worldCenter, Vector2 halfExtentsXZ, List<int> results)
+    public void QueryBounds(Transform meshTransform, Vector3 worldCenter, Vector3 halfExtents, List<int> results)
     {
         if (meshTransform == null) throw new ArgumentNullException(nameof(meshTransform));
         if (results == null) throw new ArgumentNullException(nameof(results));
         results.Clear();
 
-        // 4 world corners in XZ
         Vector3 c = worldCenter;
+
+        float yMinW = c.y - halfExtents.y;
+        float yMaxW = c.y + HUGE_Y; // up to +HUGE_Y in world
+
         Vector3[] wc =
         {
-            new Vector3(c.x - halfExtentsXZ.x, c.y, c.z - halfExtentsXZ.y),
-            new Vector3(c.x - halfExtentsXZ.x, c.y, c.z + halfExtentsXZ.y),
-            new Vector3(c.x + halfExtentsXZ.x, c.y, c.z - halfExtentsXZ.y),
-            new Vector3(c.x + halfExtentsXZ.x, c.y, c.z + halfExtentsXZ.y),
+            new Vector3(c.x - halfExtents.x, yMinW, c.z - halfExtents.z),
+            new Vector3(c.x - halfExtents.x, yMinW, c.z + halfExtents.z),
+            new Vector3(c.x + halfExtents.x, yMinW, c.z - halfExtents.z),
+            new Vector3(c.x + halfExtents.x, yMinW, c.z + halfExtents.z),
+
+            new Vector3(c.x - halfExtents.x, yMaxW, c.z - halfExtents.z),
+            new Vector3(c.x - halfExtents.x, yMaxW, c.z + halfExtents.z),
+            new Vector3(c.x + halfExtents.x, yMaxW, c.z - halfExtents.z),
+            new Vector3(c.x + halfExtents.x, yMaxW, c.z + halfExtents.z),
         };
 
-        // Convert to local and encapsulate
         Bounds local = new Bounds(meshTransform.InverseTransformPoint(wc[0]), Vector3.zero);
-        for (int i = 1; i < 4; i++)
+        for (int i = 1; i < wc.Length; i++)
             local.Encapsulate(meshTransform.InverseTransformPoint(wc[i]));
-
-        // XZ-only query slab
-        local.center = new Vector3(local.center.x, 0f, local.center.z);
-        local.size   = new Vector3(local.size.x, HUGE_Y * 2f, local.size.z);
 
         QueryBoundsInternal(Root, local, results);
     }
@@ -210,6 +221,7 @@ public sealed class VertexOctree
         if (node.IsLeaf)
         {
             float minX = query.min.x, maxX = query.max.x;
+            float minY = query.min.y;             // only lower Y matters
             float minZ = query.min.z, maxZ = query.max.z;
 
             for (int i = 0; i < node.indices.Count; i++)
@@ -217,13 +229,16 @@ public sealed class VertexOctree
                 int vi = node.indices[i];
                 Vector3 p = _verts[vi];
 
+                if (p.y < minY) continue;         // ignore lower Y only
+
                 if (p.x >= minX && p.x <= maxX && p.z >= minZ && p.z <= maxZ)
                     results.Add(vi);
             }
             return;
         }
-        Debug.Log($"{results.Count}");
+
         for (int i = 0; i < 4; i++)
             QueryBoundsInternal(node.children[i], query, results);
     }
+
 }

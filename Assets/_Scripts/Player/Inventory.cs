@@ -5,6 +5,9 @@ using UnityEngine.InputSystem;
 
 public class Inventory : MonoBehaviour
 {
+    public static Inventory Instance;
+
+    public float snowQuantity;
     [Header("Slots")]
     [SerializeField] private int maxSlots = 5;
     [SerializeField] private InventoryItem[] slots = new InventoryItem[5];
@@ -29,6 +32,12 @@ public class Inventory : MonoBehaviour
 
     private void Awake()
     {
+        if (Instance != null && Instance != this)
+        {
+            Destroy(Instance);
+        }
+        Instance = this;
+
         if (slots == null || slots.Length != 5)
             slots = new InventoryItem[5];
 
@@ -145,6 +154,16 @@ public class Inventory : MonoBehaviour
                 list.Add(i);
         }
         return list;
+    }
+
+    public void AddSnow(int amount)
+    {
+        snowQuantity += amount;
+    }
+
+    public void RemoveSnow(int amount)
+    {
+        snowQuantity -= amount;
     }
 
     // ---- Spawning ----

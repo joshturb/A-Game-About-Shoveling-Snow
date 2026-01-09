@@ -50,6 +50,21 @@ public sealed class SnowHeightfieldCollider
         return lp.y <= SampleY(cx, cz, fx, fz);
     }
 
+    public bool TryGetHeightWorld(Vector3 worldPoint, out float heightWorld)
+    {
+        heightWorld = 0f;
+
+        Vector3 lp = _tf.InverseTransformPoint(worldPoint);
+        if (!TryCell(lp, out int cx, out int cz, out float fx, out float fz))
+            return false;
+
+        float yLocal = SampleY(cx, cz, fx, fz);
+
+        Vector3 wp = _tf.TransformPoint(new Vector3(lp.x, yLocal, lp.z));
+        heightWorld = wp.y;
+        return true;
+    }
+
     public bool Raycast(Ray worldRay, out Hit hit, float maxDistance = 500f)
     {
         hit = default;
