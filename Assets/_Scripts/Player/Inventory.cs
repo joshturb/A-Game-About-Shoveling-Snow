@@ -5,9 +5,17 @@ using UnityEngine.InputSystem;
 
 public class Inventory : MonoBehaviour
 {
-    public static Inventory Instance;
+    public static float SnowQuantity { get; private set; }
 
-    public float snowQuantity;
+    public static void SetSnowQuantity(float value)
+    {
+        SnowQuantity = Mathf.Clamp(value, 0f, MaxSnowQuantity);
+        OnSnowQuantityChanged?.Invoke(SnowQuantity);
+    }
+
+    public static float MaxSnowQuantity = 100;
+    public static event Action<float> OnSnowQuantityChanged;
+
     [Header("Slots")]
     [SerializeField] private int maxSlots = 5;
     [SerializeField] private InventoryItem[] slots = new InventoryItem[5];
@@ -32,17 +40,14 @@ public class Inventory : MonoBehaviour
 
     private void Awake()
     {
-        if (Instance != null && Instance != this)
-        {
-            Destroy(Instance);
-        }
-        Instance = this;
-
         if (slots == null || slots.Length != 5)
             slots = new InventoryItem[5];
 
         if (inventoryUI != null)
             inventoryUI.Refresh(this);
+
+        SetSnowQuantity(0);
+        MaxSnowQuantity = 100;
     }
 
     private void Update()
@@ -156,14 +161,14 @@ public class Inventory : MonoBehaviour
         return list;
     }
 
-    public void AddSnow(int amount)
+    public static void AddSnow(int amount)
     {
-        snowQuantity += amount;
+        SetSnowQuantity(SnowQuantity + amount);
     }
 
-    public void RemoveSnow(int amount)
+    public static void RemoveSnow(int amount)
     {
-        snowQuantity -= amount;
+        SetSnowQuantity(SnowQuantity - amount);
     }
 
     // ---- Spawning ----

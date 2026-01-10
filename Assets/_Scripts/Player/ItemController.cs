@@ -13,8 +13,8 @@ public class ItemController : MonoBehaviour
     void Start()
     {
         animator = GetComponent<Animator>();
-        var inv = FindFirstObjectByType<Inventory>();
         fPCModule = FindFirstObjectByType<FPCModule>();
+        var inv = FindFirstObjectByType<Inventory>();
         if (!fPCModule.TryGetModule(out movementModule))
         {
             Debug.Log("Cant find Movement Module");
@@ -22,6 +22,13 @@ public class ItemController : MonoBehaviour
         }
         inv.OnItemEquip += OnEquip;
         inv.OnItemDequip += OnDequip;
+    }
+
+    void OnDestroy()
+    {
+        var inv = FindFirstObjectByType<Inventory>();
+        inv.OnItemEquip -= OnEquip;
+        inv.OnItemDequip -= OnDequip;
     }
 
     private void OnEquip(SnowInteractor si)

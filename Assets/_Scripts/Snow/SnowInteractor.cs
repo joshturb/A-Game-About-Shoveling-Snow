@@ -33,7 +33,7 @@ public abstract class SnowInteractor : MonoBehaviour
         set
         {
             _changedCount = value;
-            Inventory.Instance.AddSnow(value);
+            Inventory.AddSnow(value);
         }
     }
 

@@ -15,6 +15,10 @@ public class Shovel : SnowInteractor
 
     public override void Edit()
     {
+        //print($"{Inventory.SnowQuantity} + {Inventory.MaxSnowQuantity}");
+        if (Inventory.SnowQuantity >= Inventory.MaxSnowQuantity)
+            return;
+
         base.Edit();
         
         if (changedCount == 0)

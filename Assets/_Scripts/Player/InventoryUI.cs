@@ -40,8 +40,7 @@ public class InventoryUI : MonoBehaviour
             var item = inv.GetItem(i);
             bool hasItem = item != null;
 
-            if (s.root != null)
-                s.root.SetActive(hasItem);
+            s.root?.SetActive(hasItem);
 
             if (!hasItem)
                 continue;
