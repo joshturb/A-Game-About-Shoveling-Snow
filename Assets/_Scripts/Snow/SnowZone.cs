@@ -10,7 +10,7 @@ public sealed class SnowZone : MonoBehaviour
     [Header("Zone Volumes (ordered)")]
     [Tooltip("Multiple BoxColliders make up this zone. Order matters only if you use multiple zones and want priority.")]
     [SerializeField] private BoxCollider[] zoneColliders;
-
+ 
     [Header("Snow Field (optional)")]
     [SerializeField] private SnowField snowField;
 

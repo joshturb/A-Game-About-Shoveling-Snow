@@ -5,15 +5,15 @@ using UnityEngine.InputSystem;
 
 public class Inventory : MonoBehaviour
 {
-    public static float SnowQuantity { get; private set; }
+    public static int SnowQuantity { get; private set; }
 
-    public static void SetSnowQuantity(float value)
+    public static void SetSnowQuantity(int value)
     {
-        SnowQuantity = Mathf.Clamp(value, 0f, MaxSnowQuantity);
+        SnowQuantity = Mathf.Clamp(value, 0, MaxSnowQuantity);
         OnSnowQuantityChanged?.Invoke(SnowQuantity);
     }
 
-    public static float MaxSnowQuantity = 100;
+    public static int MaxSnowQuantity = 100;
     public static event Action<float> OnSnowQuantityChanged;
 
     [Header("Slots")]

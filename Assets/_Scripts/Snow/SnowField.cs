@@ -1,3 +1,4 @@
+// SnowField.cs
 using System;
 using System.Collections.Generic;
 using UnityEngine;
@@ -35,6 +36,12 @@ public class SnowField : MonoBehaviour
     [SerializeField, Min(0)] private int reposeIterations = 4;
     [SerializeField, Range(0f, 1f)] private float reposeStrength = 0.5f;
 
+    [Header("Ice Rendering (Submeshes)")]
+    [SerializeField, Range(0f, 1f)] private float iceTriMajority = 0.5f; // avg mask >= this => triangle goes to ice submesh
+    [SerializeField, Min(0)] private int iceVisualExpandRings = 1;        // NEW: VISUAL ONLY expansion (rings of edge-adjacent tris)
+    [SerializeField, Min(0.001f)] private float iceProbeRadius = 0.35f; // tune ~ your vertex spacing
+    private readonly List<int> _iceProbe = new(64);
+
     public VertexOctree Tree { get; private set; }
     public SnowHeightfieldCollider _hf;
     public Vector3[] GetVerts() => _verts;
@@ -53,6 +60,12 @@ public class SnowField : MonoBehaviour
     private bool[] _reposeMark;
     private readonly List<int> _reposeList = new(1024);
 
+    // ice rendering support
+    private float[] _iceMask;   // per-vertex 0..1
+    private int[] _baseTris;    // full triangle list (combined), used for adjacency + classification
+    private bool[] _isIceVert;
+    private int[] _iceTrisGameplay;
+
     void Awake()
     {
         if (Instance != null && Instance != this)
@@ -67,6 +80,9 @@ public class SnowField : MonoBehaviour
         _mf = GetComponent<MeshFilter>();
         _mesh = _mf.mesh;
         _mesh.MarkDynamic();
+
+        // Cache full tri list BEFORE we author submeshes, so we always have the original connectivity.
+        _baseTris = CaptureBaseTriangles(_mesh);
 
         _verts = _mesh.vertices; // ONE initial copy only
         _blocked = new bool[_verts.Length];
@@ -90,9 +106,71 @@ public class SnowField : MonoBehaviour
         OnInitialized?.Invoke();
     }
 
+    public bool IsIceAtWorld(Vector3 worldPos)
+    {
+        if (_isIceVert == null || Tree == null) return false;
+
+        Vector3 local = transform.InverseTransformPoint(worldPos);
+        local.y = 0f;
+
+        _iceProbe.Clear();
+        Tree.QuerySphere(local, iceProbeRadius, _iceProbe);
+        if (_iceProbe.Count == 0) return false;
+
+        // use closest sampled vertex as the surface type
+        float best = float.PositiveInfinity;
+        int bestIdx = -1;
+
+        for (int k = 0; k < _iceProbe.Count; k++)
+        {
+            int i = _iceProbe[k];
+            if ((uint)i >= (uint)_verts.Length) continue;
+            if (_blocked != null && _blocked[i]) continue;
+
+            float dx = _verts[i].x - local.x;
+            float dz = _verts[i].z - local.z;
+            float d2 = dx * dx + dz * dz;
+
+            if (d2 < best)
+            {
+                best = d2;
+                bestIdx = i;
+            }
+        }
+
+        return bestIdx >= 0 && _isIceVert[bestIdx];
+    }
+
+    private static int[] CaptureBaseTriangles(Mesh m)
+    {
+        if (m == null) return Array.Empty<int>();
+
+        int smc = Mathf.Max(1, m.subMeshCount);
+
+        if (smc == 1)
+            return m.triangles;
+
+        // Combine all submeshes into one connectivity list.
+        int total = 0;
+        for (int s = 0; s < smc; s++)
+            total += m.GetTriangles(s).Length;
+
+        var combined = new int[total];
+        int at = 0;
+        for (int s = 0; s < smc; s++)
+        {
+            var tris = m.GetTriangles(s);
+            Array.Copy(tris, 0, combined, at, tris.Length);
+            at += tris.Length;
+        }
+        return combined;
+    }
+
     private void ApplyInitialSnow()
     {
         float minH = snowController.GetSnowSettings().minHeight;
+
+        _iceMask ??= new float[_verts.Length];
 
         for (int i = 0; i < _verts.Length; i++)
         {
@@ -102,15 +180,212 @@ public class SnowField : MonoBehaviour
             {
                 _blocked[i] = true;
                 _blockedCount++;
-                _verts[i].y = minH; // kept cleared physically, but excluded from progress
+                _verts[i].y = minH;     // kept cleared physically, but excluded from progress
+                _iceMask[i] = 0f;       // force snow submesh bias for blocked verts
                 continue;
             }
 
-            _verts[i].y = snowController.SampleNoise(_verts[i]);
+            _verts[i].y = snowController.SampleNoise(_verts[i]);          // existing behavior
+            _iceMask[i] = snowController.SampleIceMask(_verts[i]);        // ice mask noise
         }
 
         _mesh.vertices = _verts;
+
+        // Build snow/ice submeshes without splitting vertices.
+        RebuildIceSubmeshes();
+        RebuildIceVertexFlags(); // gameplay flags from true (non-expanded) ice tris
+
         ApplyMeshChanges(0);
+        MeshEdgeDistanceBaker.BakeToUV2X(_mesh, submeshIndex: 1, planarXZ: true);
+    }
+
+    // ---------- NEW helpers for visual expansion ----------
+    private static ulong EdgeKey(int a, int b)
+    {
+        if (a > b) (a, b) = (b, a);
+        return ((ulong)(uint)a << 32) | (uint)b;
+    }
+
+    private static void AddTriEdges(HashSet<ulong> set, int a, int b, int c)
+    {
+        set.Add(EdgeKey(a, b));
+        set.Add(EdgeKey(b, c));
+        set.Add(EdgeKey(c, a));
+    }
+    // ------------------------------------------------------
+
+    private void RebuildIceSubmeshes()
+    {
+        var settings = snowController.GetSnowSettings();
+
+        if (!settings.enableIce || _iceMask == null || _iceMask.Length == 0)
+        {
+            _iceTrisGameplay = null;
+            _mesh.subMeshCount = 1;
+            _mesh.SetTriangles(_baseTris, 0, true);
+            return;
+        }
+
+        int triCount = _baseTris.Length / 3;
+        if (triCount <= 0)
+        {
+            _iceTrisGameplay = null;
+            _mesh.subMeshCount = 1;
+            _mesh.SetTriangles(_baseTris, 0, true);
+            return;
+        }
+
+        // Base classification (GAMEPLAY): by vertex ice mask majority.
+        var baseIceTri = new bool[triCount];
+        var blockedTri = new bool[triCount];
+
+        var iceTrisGameplay = new List<int>(_baseTris.Length / 4);
+
+        for (int t = 0; t < triCount; t++)
+        {
+            int i0 = t * 3;
+            int a = _baseTris[i0 + 0];
+            int b = _baseTris[i0 + 1];
+            int c = _baseTris[i0 + 2];
+
+            if ((_blocked != null) && (_blocked[a] || _blocked[b] || _blocked[c]))
+            {
+                blockedTri[t] = true;
+                baseIceTri[t] = false;
+                continue;
+            }
+
+            float m = (_iceMask[a] + _iceMask[b] + _iceMask[c]) / 3f;
+            bool isIce = (m >= iceTriMajority);
+            baseIceTri[t] = isIce;
+
+            if (isIce)
+            {
+                iceTrisGameplay.Add(a);
+                iceTrisGameplay.Add(b);
+                iceTrisGameplay.Add(c);
+            }
+        }
+
+        // Store TRUE ice triangles for gameplay (EditType), BEFORE any visual expansion.
+        _iceTrisGameplay = iceTrisGameplay.Count > 0 ? iceTrisGameplay.ToArray() : Array.Empty<int>();
+
+        // VISUAL expansion: dilate ICE triangles by edge-adjacent rings.
+        var visualIceTri = new bool[triCount];
+        Array.Copy(baseIceTri, visualIceTri, triCount);
+
+        int rings = Mathf.Max(0, iceVisualExpandRings);
+        if (rings > 0)
+        {
+            var edgeSet = new HashSet<ulong>(triCount * 2);
+
+            // Seed edges from current visual ice
+            for (int t = 0; t < triCount; t++)
+            {
+                if (!visualIceTri[t]) continue;
+                int i0 = t * 3;
+                AddTriEdges(edgeSet,
+                    _baseTris[i0 + 0],
+                    _baseTris[i0 + 1],
+                    _baseTris[i0 + 2]);
+            }
+
+            var newlyAdded = new List<int>(triCount / 8);
+
+            for (int r = 0; r < rings; r++)
+            {
+                newlyAdded.Clear();
+
+                for (int t = 0; t < triCount; t++)
+                {
+                    if (visualIceTri[t]) continue;
+                    if (blockedTri[t]) continue;
+
+                    int i0 = t * 3;
+                    int a = _baseTris[i0 + 0];
+                    int b = _baseTris[i0 + 1];
+                    int c = _baseTris[i0 + 2];
+
+                    if (edgeSet.Contains(EdgeKey(a, b)) ||
+                        edgeSet.Contains(EdgeKey(b, c)) ||
+                        edgeSet.Contains(EdgeKey(c, a)))
+                    {
+                        newlyAdded.Add(t);
+                    }
+                }
+
+                if (newlyAdded.Count == 0)
+                    break;
+
+                for (int n = 0; n < newlyAdded.Count; n++)
+                {
+                    int t = newlyAdded[n];
+                    visualIceTri[t] = true;
+
+                    int i0 = t * 3;
+                    AddTriEdges(edgeSet,
+                        _baseTris[i0 + 0],
+                        _baseTris[i0 + 1],
+                        _baseTris[i0 + 2]);
+                }
+            }
+        }
+
+        // Emit submeshes: snow vs VISUAL ice
+        var snowTris = new List<int>(_baseTris.Length);
+        var iceTris = new List<int>(_baseTris.Length / 4);
+
+        for (int t = 0; t < triCount; t++)
+        {
+            int i0 = t * 3;
+            int a = _baseTris[i0 + 0];
+            int b = _baseTris[i0 + 1];
+            int c = _baseTris[i0 + 2];
+
+            if (blockedTri[t] || !visualIceTri[t])
+            {
+                snowTris.Add(a); snowTris.Add(b); snowTris.Add(c);
+            }
+            else
+            {
+                iceTris.Add(a); iceTris.Add(b); iceTris.Add(c);
+            }
+        }
+
+        _mesh.subMeshCount = 2;
+        _mesh.SetTriangles(snowTris, 0, true); // Material 0 = snow
+        _mesh.SetTriangles(iceTris, 1, true);  // Material 1 = ice (VISUALLY expanded)
+    }
+
+    // NEW: build a fast per-vertex “is ice” lookup from TRUE ice triangles (NOT expanded)
+    private void RebuildIceVertexFlags()
+    {
+        if (_isIceVert == null || _isIceVert.Length != _mesh.vertexCount)
+            _isIceVert = new bool[_mesh.vertexCount];
+        else
+            Array.Clear(_isIceVert, 0, _isIceVert.Length);
+
+        var settings = snowController.GetSnowSettings();
+        if (!settings.enableIce) return;
+        if (_iceTrisGameplay == null || _iceTrisGameplay.Length == 0) return;
+
+        for (int t = 0; t < _iceTrisGameplay.Length; t++)
+        {
+            int i = _iceTrisGameplay[t];
+            if ((uint)i >= (uint)_isIceVert.Length) continue;
+            if (_blocked != null && _blocked[i]) continue;
+            _isIceVert[i] = true;
+        }
+    }
+
+    private bool PassesEditType(int vertIndex, EditType editType)
+    {
+        if (_blocked != null && _blocked[vertIndex]) return false;
+
+        if (editType == EditType.Both) return true;
+
+        bool isIce = (_isIceVert != null) && _isIceVert[vertIndex];
+        return editType == EditType.Ice ? isIce : !isIce; // Snow => not ice
     }
 
     private int CountClearedVerts(Vector3[] verts)
@@ -185,7 +460,8 @@ public class SnowField : MonoBehaviour
             results);
     }
 
-    public int EditY(List<int> indices, Vector3 hitLocal, float radius, float value, YEditMode mode, float smoothness = 0f)
+    // CHANGED: added EditType editType
+    public int EditY(List<int> indices, Vector3 hitLocal, float radius, float value, YEditMode mode, float smoothness = 0f, EditType editType = EditType.Both)
     {
         if (indices == null || indices.Count == 0) return 0;
 
@@ -202,7 +478,7 @@ public class SnowField : MonoBehaviour
             for (int k = 0; k < indices.Count; k++)
             {
                 int i = indices[k];
-                if (_blocked != null && _blocked[i]) continue;
+                if (!PassesEditType(i, editType)) continue;
 
                 float before = _verts[i].y;
                 bool wasCleared = before <= thresh;
@@ -236,7 +512,7 @@ public class SnowField : MonoBehaviour
             for (int k = 0; k < indices.Count; k++)
             {
                 int i = indices[k];
-                if (_blocked != null && _blocked[i]) continue;
+                if (!PassesEditType(i, editType)) continue;
 
                 float before = _verts[i].y;
                 bool wasCleared = before <= thresh;
@@ -274,6 +550,7 @@ public class SnowField : MonoBehaviour
         return changedCount;
     }
 
+    // CHANGED: added EditType editType
     public int Plow(
         List<int> removeIndices,
         List<int> depositIndices,
@@ -283,7 +560,8 @@ public class SnowField : MonoBehaviour
         float removeRadius,
         float depositRadius,
         float pushAmount,
-        float smoothness = 1f)
+        float smoothness = 1f,
+        EditType editType = EditType.Both)
     {
         if (removeIndices == null || removeIndices.Count == 0) return 0;
         if (depositIndices == null || depositIndices.Count == 0) return 0;
@@ -322,7 +600,7 @@ public class SnowField : MonoBehaviour
         for (int k = 0; k < removeIndices.Count; k++)
         {
             int i = removeIndices[k];
-            if (_blocked != null && _blocked[i]) continue;
+            if (!PassesEditType(i, editType)) continue;
 
             float dx = _verts[i].x - cx;
             float dz = _verts[i].z - cz;
@@ -371,7 +649,7 @@ public class SnowField : MonoBehaviour
         for (int k = 0; k < depositIndices.Count; k++)
         {
             int i = depositIndices[k];
-            if (_blocked != null && _blocked[i]) continue;
+            if (!PassesEditType(i, editType)) continue;
 
             float dx = _verts[i].x - dcx;
             float dz = _verts[i].z - dcz;
@@ -400,7 +678,7 @@ public class SnowField : MonoBehaviour
             if (w <= 0f) continue;
 
             int i = depositIndices[k];
-            if (_blocked != null && _blocked[i]) continue;
+            if (!PassesEditType(i, editType)) continue;
 
             float before = _verts[i].y;
             bool wasCleared = before <= thresh;
@@ -415,8 +693,8 @@ public class SnowField : MonoBehaviour
             if (wasCleared != isCleared) clearedDelta += isCleared ? 1 : -1;
         }
 
-        // 3) SLOPE RELAX: prevent vertical walls after repeated plows
-        ApplyAngleOfRepose(depositIndices, minH, thresh, ref clearedDelta, ref changedCount);
+        // 3) SLOPE RELAX: prevent vertical walls after repeated plows (respect EditType)
+        ApplyAngleOfRepose(depositIndices, minH, thresh, editType, ref clearedDelta, ref changedCount);
 
         if (changedCount == 0) return 0;
 
@@ -439,7 +717,7 @@ public class SnowField : MonoBehaviour
         for (int i = 0; i < vc; i++)
             _neighbors[i] = new List<int>(8);
 
-        int[] tris = _mesh.triangles;
+        int[] tris = _baseTris; // IMPORTANT: always use full connectivity, not submesh 0 only
         for (int t = 0; t < tris.Length; t += 3)
         {
             int a = tris[t];
@@ -465,7 +743,8 @@ public class SnowField : MonoBehaviour
         list.Add(b);
     }
 
-    private void ApplyAngleOfRepose(List<int> seeds, float minH, float thresh, ref int clearedDelta, ref int changedCount)
+    // CHANGED: added EditType editType, and we enforce that BOTH i and j pass the same type filter.
+    private void ApplyAngleOfRepose(List<int> seeds, float minH, float thresh, EditType editType, ref int clearedDelta, ref int changedCount)
     {
         if (reposeIterations <= 0 || reposeStrength <= 0f) return;
         if (seeds == null || seeds.Count == 0) return;
@@ -477,7 +756,7 @@ public class SnowField : MonoBehaviour
         {
             int i = seeds[k];
             if ((uint)i >= (uint)_verts.Length) continue;
-            if (_blocked != null && _blocked[i]) continue;
+            if (!PassesEditType(i, editType)) continue;
             if (_reposeMark[i]) continue;
 
             _reposeMark[i] = true;
@@ -499,7 +778,7 @@ public class SnowField : MonoBehaviour
                 {
                     int j = nb[n];
                     if ((uint)j >= (uint)_verts.Length) continue;
-                    if (_blocked != null && _blocked[j]) continue;
+                    if (!PassesEditType(j, editType)) continue;
 
                     Vector3 vj = _verts[j];
 

@@ -1,7 +1,7 @@
 using System;
 using UnityEngine;
 
-[System.Serializable]
+[Serializable]
 public struct SnowSettings
 {
     public float minHeight;
@@ -36,9 +36,16 @@ public struct SnowSettings
     public float weight3;
     public float power3;
 
-    [Header("Final Height")]
-    public float minSnowHeight;
-    public float maxSnowHeight;
+    [Header("Ice (Mask Noise)")]
+    public bool enableIce;
+    [Range(0f, 1f)] public float iceCoverage;   // higher = more ice overall
+    [Min(0.0001f)] public float iceFalloff;     // softness of mask edge
+    public FastNoiseLite.NoiseType iceNoiseType;
+    public FastNoiseLite.FractalType iceFractalType;
+    public int iceOctaves;
+    public float iceLacunarity;
+    public float iceGain;
+    public float iceScale;
 
     public static SnowSettings Default => new()
     {
@@ -72,8 +79,15 @@ public struct SnowSettings
         weight3 = 0.12f,
         power3 = 1.0f,
 
-        minSnowHeight = 0.1f,
-        maxSnowHeight = 3f,
+        enableIce = true,
+        iceCoverage = 0.55f,
+        iceFalloff = 0.08f,
+        iceNoiseType = FastNoiseLite.NoiseType.OpenSimplex2,
+        iceFractalType = FastNoiseLite.FractalType.FBm,
+        iceOctaves = 3,
+        iceLacunarity = 2.0f,
+        iceGain = 0.5f,
+        iceScale = 90f,
     };
 }
 
@@ -93,11 +107,13 @@ public class SnowController : MonoBehaviour
     public SnowSettings GetSnowSettings() => snowSettings;
     public float GetSnowCleared() => snowCleared;
     public float GetSnowRemaining() => snowRemaining;
- 
+
     // Private Variables
     private FastNoiseLite n1;
     private FastNoiseLite n2;
     private FastNoiseLite n3;
+    private FastNoiseLite nIce;
+
     private int totalVerts;
     private int clearedVerts;
 
@@ -115,10 +131,13 @@ public class SnowController : MonoBehaviour
         n1 = new FastNoiseLite(seed);
         n2 = new FastNoiseLite(unchecked(seed ^ (int)0x9E3779B9));
         n3 = new FastNoiseLite(unchecked(seed ^ (int)0xBB67AE85));
+        nIce = new FastNoiseLite(unchecked(seed ^ (int)0x3C6EF372));
 
         ConfigureNoise(n1, snowSettings.noiseType1, snowSettings.fractalType1, snowSettings.octaves1, snowSettings.lacunarity1, snowSettings.gain1, snowSettings.scale1);
         ConfigureNoise(n2, snowSettings.noiseType2, snowSettings.fractalType2, snowSettings.octaves2, snowSettings.lacunarity2, snowSettings.gain2, snowSettings.scale2);
         ConfigureNoise(n3, snowSettings.noiseType3, snowSettings.fractalType3, snowSettings.octaves3, snowSettings.lacunarity3, snowSettings.gain3, snowSettings.scale3);
+
+        ConfigureNoise(nIce, snowSettings.iceNoiseType, snowSettings.iceFractalType, snowSettings.iceOctaves, snowSettings.iceLacunarity, snowSettings.iceGain, snowSettings.iceScale);
     }
 
     private static void ConfigureNoise(FastNoiseLite n, FastNoiseLite.NoiseType type, FastNoiseLite.FractalType fractal, int oct, float lac, float gain, float scale)
@@ -149,7 +168,21 @@ public class SnowController : MonoBehaviour
         float t = (t1 * w1 + t2 * w2 + t3 * w3) / wSum;
         t = Mathf.Clamp01(t);
 
-        return Mathf.Lerp(snowSettings.minSnowHeight, snowSettings.maxSnowHeight, t);
+        return Mathf.Lerp(snowSettings.minHeight, snowSettings.maxHeight, t);
+    }
+
+    // 0..1 mask used to classify triangles into the Ice submesh.
+    public float SampleIceMask(Vector3 worldPos)
+    {
+        if (!snowSettings.enableIce) return 0f;
+
+        float t = Mathf.Clamp01(nIce.GetNoise(worldPos.x, worldPos.z) * 0.5f + 0.5f);
+
+        // Higher coverage => lower threshold (more of the field becomes ice).
+        float threshold = 1f - Mathf.Clamp01(snowSettings.iceCoverage);
+        float falloff = Mathf.Max(1e-6f, snowSettings.iceFalloff);
+
+        return Mathf.SmoothStep(threshold - falloff, threshold + falloff, t);
     }
 
     public void RegisterField(int vertexCount, int initialClearedCount)

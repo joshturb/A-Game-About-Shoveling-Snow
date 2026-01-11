@@ -1,9 +1,11 @@
+// SnowInteractor.cs
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
 public enum YEditMode { Set, Add, Subtract }
-public enum EditShape { Bounds, Sphere}
+public enum EditShape { Bounds, Sphere }
+public enum EditType { Snow, Ice, Both }
 
 public abstract class SnowInteractor : MonoBehaviour
 {
@@ -14,11 +16,14 @@ public abstract class SnowInteractor : MonoBehaviour
     [SerializeField] private float distance = 5f;
     [SerializeField] private EditShape shape = EditShape.Bounds;
     [SerializeField] private YEditMode mode = YEditMode.Add;
+    [SerializeField] private EditType type = EditType.Snow;
 
     [Header("Sphere")]
     [SerializeField] private float sphereRadius = 0.5f;
+
     [Header("Bounds")]
     [SerializeField] private Collider boundsCollider;
+
     [SerializeField] private float value = 0.05f;
     [SerializeField] private float plowValueMultiplier = 0.3f;
     [SerializeField] private float smoothness = 1f;
@@ -65,8 +70,8 @@ public abstract class SnowInteractor : MonoBehaviour
             Vector3 localPoint = snowField.transform.InverseTransformPoint(h.pointWorld);
 
             _hitVerts.Clear();
-            snowField.QuerySphere(localPoint, sphereRadius, _hitVerts); 
-            changedCount = snowField.EditY(_hitVerts, localPoint, sphereRadius, value, mode, smoothness);
+            snowField.QuerySphere(localPoint, sphereRadius, _hitVerts);
+            changedCount = snowField.EditY(_hitVerts, localPoint, sphereRadius, value, mode, smoothness, type);
             return;
         }
 
@@ -75,11 +80,12 @@ public abstract class SnowInteractor : MonoBehaviour
         Vector3 worldCenter = boundsCollider.bounds.center;
         Vector3 localCenter = snowField.transform.InverseTransformPoint(worldCenter);
 
-        _hitVerts.Clear();
+        _hitVerts.Clear(); 
         var b = boundsCollider.bounds;
         snowField.QueryBounds(b, _hitVerts);
+
         float boundsRadius = Mathf.Max(b.extents.x, b.extents.z);
-        changedCount = snowField.EditY(_hitVerts, localCenter, boundsRadius, value, mode, smoothness);
+        changedCount = snowField.EditY(_hitVerts, localCenter, boundsRadius, value, mode, smoothness, type);
     }
 
     public virtual void Plow()
@@ -124,6 +130,7 @@ public abstract class SnowInteractor : MonoBehaviour
             removeRadius,
             depositRadius,
             value * plowValueMultiplier,
-            smoothness);
+            smoothness,
+            type);
     }
 }

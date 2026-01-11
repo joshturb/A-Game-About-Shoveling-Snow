@@ -14,14 +14,15 @@ public class MovementModule : PlayerModule
 	public float blockDepth = 1.2f;                // cannot move if depth >= this
 	public float blockProbeForward = 1;
 	public float blockProbeSide = 0.35f; // set to your controller radius (or slightly larger)
-
 	public bool blockInDeepSnow = true;
-
-	// new: higher = faster interpolation (instant when very large)
 	public float speedLerp = 10f;
+	[SerializeField] private float iceSteerLerp = 2f;     // lower = slipperier steering
+	[SerializeField, Min(0f)] private float iceDrag = 0.6f; // 0 = no friction, higher = stops faster
+	[SerializeField] private float iceSpeedMultiplier = 1.1f; // optional
+	private Vector3 _slideVel;
+
 
 	private float currentSpeed = 0f;
-
 	private Vector2 input;
 	private bool isSprinting;
 	private bool sprintToggleState = false;
@@ -124,12 +125,33 @@ public class MovementModule : PlayerModule
 			}
 		}
 
-		currentSpeed = Mathf.Lerp(currentSpeed, targetSpeed, speedLerp * Time.deltaTime);
+		bool onIce = (SnowField.Instance != null) && SnowField.Instance.IsIceAtWorld(fPCModule.transform.position);
 
-		Vector3 movement = desired.sqrMagnitude > 1e-8f ? desired.normalized * currentSpeed : Vector3.zero;
-		fPCModule.movement = new Vector3(movement.x, fPCModule.movement.y, movement.z);
+		Vector3 desiredVel =
+			desired.sqrMagnitude > 1e-8f
+				? desired.normalized * targetSpeed
+				: Vector3.zero;
 
-		// local helper
+		if (!onIce)
+		{
+			// normal ground: your existing speed lerp, plus stop when no input
+			currentSpeed = Mathf.Lerp(currentSpeed, targetSpeed, speedLerp * Time.deltaTime);
+			_slideVel = desired.sqrMagnitude > 1e-8f ? desired.normalized * currentSpeed : Vector3.zero;
+		}
+		else
+		{
+			// ice: NO friction -> do not decay velocity when no input
+			// steering only nudges velocity toward desired
+			if (desiredVel.sqrMagnitude > 1e-8f)
+			{
+				Vector3 iceDesired = desiredVel * iceSpeedMultiplier;
+				_slideVel = Vector3.Lerp(_slideVel, iceDesired, iceSteerLerp * Time.deltaTime);
+			}
+			_slideVel = Vector3.MoveTowards(_slideVel, Vector3.zero, iceDrag * Time.deltaTime);
+		}
+
+		fPCModule.movement = new Vector3(_slideVel.x, fPCModule.movement.y, _slideVel.z);
+
 		bool IsBlockedAt(Vector3 probeWorldPos)
 		{
 			if (!SnowField.Instance.TryGetSnowHeightWorld(probeWorldPos, out float snowY))

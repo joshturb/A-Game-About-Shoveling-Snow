@@ -13,16 +13,19 @@ MonoBehaviour:
   m_Name: Movement
   m_EditorClassIdentifier: 
   walkingSpeed: 4
-  sprintingSpeed: 8
+  sprintingSpeed: 6
   walkingStaminaMultiplier: 0
   sprintingStaminaMultiplier: 2
   feetYOffset: -0.5
-  slowDepth: 0.5
-  minSnowSpeedMultiplier: 0.2
+  slowDepth: 0.2
+  minSnowSpeedMultiplier: 0.25
   blockDepth: 1
   blockProbeForward: 1
   blockProbeSide: 0.35
   blockInDeepSnow: 1
   speedLerp: 10
+  iceSteerLerp: 1
+  iceDrag: 0.1
+  iceSpeedMultiplier: 1.1
   toggleSprint: 0
   isLocked: 0

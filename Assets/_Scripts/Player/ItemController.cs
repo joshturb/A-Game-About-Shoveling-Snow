@@ -48,6 +48,9 @@ public class ItemController : MonoBehaviour
         if (snowInteractor == null)
             return;
 
+        if (Interaction.currentHeldInteractable != null || Interaction.raycastHitResults.collider != null)
+            return;
+
         if (InputHandler.Instance.playerActions.Attack.IsPressed() && !isPlowing && !isShoveling)
         {
             isShoveling = true;

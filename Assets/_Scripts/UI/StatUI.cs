@@ -1,4 +1,4 @@
-using System;
+
 using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
@@ -11,11 +11,26 @@ public class StatUI : MonoBehaviour
     public Sprite[] snowAmountSprites;
     public Image snowAmountImage;
     public TMP_Text snowAmount;
+    public TMP_Text coinAmount;
+
 
     void Start()
     {
         SnowController.Instance.OnGlobalProgressUpdated += UpdateProgress;
+        Coins.Instance.OnCoinAmountChanged += OnCoinsChanged;
         Inventory.OnSnowQuantityChanged += OnHeldSnowQuantityChanged;
+    }
+
+    void OnDestroy()
+    {
+        SnowController.Instance.OnGlobalProgressUpdated -= UpdateProgress;
+        Inventory.OnSnowQuantityChanged -= OnHeldSnowQuantityChanged;
+        Coins.Instance.OnCoinAmountChanged -= OnCoinsChanged;
+    }
+
+    private void OnCoinsChanged(int value)
+    {
+        coinAmount.text = value.ToString();
     }
 
     private void OnHeldSnowQuantityChanged(float amount)

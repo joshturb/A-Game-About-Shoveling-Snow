@@ -33,8 +33,11 @@ public class SledMovement : MonoBehaviour, IHoldInteractable
         inStopZone = true;
     }
 
-    public void OnHoldStart(RaycastHit hit)
+    public void OnHoldStart(RaycastHit hit, InteractKey interactKey)
     {
+        if (interactKey == InteractKey.Key)
+            return;
+
         isHolding = true;
         targetXZ = rb.position;
         inStopZone = true;
@@ -61,8 +64,8 @@ public class SledMovement : MonoBehaviour, IHoldInteractable
         else
         {
             // Fallback to whatever Interaction is currently pointing at (ensure Interaction keeps this updated while holding).
-            targetWorld = interaction.raycastHitResults.collider != null && interaction.raycastHitResults.transform != transform
-                ? interaction.raycastHitResults.point
+            targetWorld = Interaction.raycastHitResults.collider != null && Interaction.raycastHitResults.transform != transform
+                ? Interaction.raycastHitResults.point
                 : (interaction.playerCamera.transform.position + interaction.playerCamera.transform.forward * distance);
         }
 
