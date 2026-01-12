@@ -17,12 +17,23 @@ public sealed class SplineToMesh : MonoBehaviour
     private Mesh _mesh;
     private MeshFilter _mf;
 
-    // Reused buffers (no GC during rebuild)
+    // Reused buffers
     private readonly List<Vector2> _polyXZ = new(512);
+    private readonly List<float> _polyY = new(512);
+
     private readonly List<Vector3> _gridVerts = new(8192);
     private readonly List<Vector2> _gridUVs = new(8192);
     private readonly List<int> _tris = new(16384);
     private readonly List<float> _xHits = new(256);
+
+    // Compaction buffers (so mesh is exactly inside spline, no unused grid verts)
+    private readonly List<Vector3> _compactVerts = new(8192);
+    private readonly List<Vector2> _compactUVs = new(8192);
+    private readonly List<int> _compactTris = new(16384);
+    private int[] _remap;
+
+    // Used mask for Y assignment
+    private bool[] _usedMask;
 
     private const float EPS = 1e-6f;
 
@@ -46,13 +57,15 @@ public sealed class SplineToMesh : MonoBehaviour
         float step = Mathf.Max(0.01f, detail);
 
         _polyXZ.Clear();
-        if (!SampleSplinePolygonLocalXZ(spline, step, _polyXZ, out float flatY))
+        _polyY.Clear();
+
+        if (!SampleSplinePolygonLocalXZ(spline, step, _polyXZ, _polyY, out float baseY))
         {
             ClearMesh();
             return;
         }
 
-        CleanupConsecutiveDuplicates(_polyXZ, Mathf.Max(1e-5f, step * 0.02f));
+        CleanupConsecutiveDuplicates(_polyXZ, _polyY, Mathf.Max(1e-5f, step * 0.02f));
         if (_polyXZ.Count < 3)
         {
             ClearMesh();
@@ -61,27 +74,34 @@ public sealed class SplineToMesh : MonoBehaviour
 
         EnsureMesh();
 
-        if (!BuildQuadGridFillScanline(_polyXZ, flatY, step, _gridVerts, _gridUVs, _tris, _xHits))
+        if (!BuildQuadGridFillScanline(_polyXZ, baseY, step, _gridVerts, _gridUVs, _tris, _xHits))
         {
             ClearMesh();
             return;
         }
 
-        _mesh.indexFormat = (_gridVerts.Count > 65535)
-            ? IndexFormat.UInt32
-            : IndexFormat.UInt16;
+        // Trim unused grid verts so the mesh is exactly inside spline bounds (no extra verts outside polygon)
+        CompactToUsedVertices(_gridVerts, _gridUVs, _tris);
+
+        // Use spline knot/sample Y for the surface (simple nearest boundary sample in XZ)
+        ApplyNearestSplineY(_polyXZ, _polyY, _gridVerts, _tris);
+
+        _mesh.indexFormat = (_gridVerts.Count > 65535) ? IndexFormat.UInt32 : IndexFormat.UInt16;
 
         _mesh.Clear(false);
         _mesh.SetVertices(_gridVerts);
         _mesh.SetUVs(0, _gridUVs);
         _mesh.SetTriangles(_tris, 0, true);
-        _mesh.RecalculateNormals();     // once
+        _mesh.RecalculateNormals();
         _mesh.RecalculateBounds();
     }
 
-    private bool SampleSplinePolygonLocalXZ(Spline spline, float step, List<Vector2> outPolyXZ, out float flatY)
+    private bool SampleSplinePolygonLocalXZ(
+        Spline spline, float step,
+        List<Vector2> outPolyXZ, List<float> outPolyY,
+        out float avgY)
     {
-        flatY = 0f;
+        avgY = 0f;
 
         float length = SafeSplineLengthWorld(spline);
         int samples = (length > EPS)
@@ -91,29 +111,33 @@ public sealed class SplineToMesh : MonoBehaviour
         Transform cTr = splineContainer.transform;
 
         bool closed = spline.Closed;
-        int count = closed ? samples : (samples + 1); // include endpoint if open
+        int count = closed ? samples : (samples + 1);
 
         float sumY = 0f;
         for (int i = 0; i < count; i++)
         {
-            float t = (count == 1) ? 0f : (i / (float)(count - 1)); // [0,1] if open, [0,1) if closed handled below
-            if (closed) t = i / (float)samples; // [0,1)
+            float t = (count == 1) ? 0f : (i / (float)(count - 1));
+            if (closed) t = i / (float)samples;
 
             float3 localPos = SplineUtility.EvaluatePosition(spline, t);
             Vector3 worldPos = cTr.TransformPoint((Vector3)localPos);
             Vector3 localToThis = transform.InverseTransformPoint(worldPos);
 
             outPolyXZ.Add(new Vector2(localToThis.x, localToThis.z));
+            outPolyY.Add(localToThis.y);
             sumY += localToThis.y;
         }
 
         if (outPolyXZ.Count < 3) return false;
 
-        // Force a closed loop for filling
+        // Force a closed loop for filling (keep Y aligned)
         if ((outPolyXZ[0] - outPolyXZ[^1]).sqrMagnitude > 1e-10f)
+        {
             outPolyXZ.Add(outPolyXZ[0]);
+            outPolyY.Add(outPolyY[0]);
+        }
 
-        flatY = sumY / Mathf.Max(1, count);
+        avgY = sumY / Mathf.Max(1, count);
         return true;
     }
 
@@ -130,7 +154,6 @@ public sealed class SplineToMesh : MonoBehaviour
         }
     }
 
-    // Builds a full shared grid, then fills quads per row using scanline intersections (robust for long/complex concave shapes).
     private static bool BuildQuadGridFillScanline(
         List<Vector2> poly, float y, float step,
         List<Vector3> outVerts, List<Vector2> outUVs, List<int> outTris,
@@ -141,11 +164,9 @@ public sealed class SplineToMesh : MonoBehaviour
         outTris.Clear();
         tempXHits.Clear();
 
-        // poly is closed (last == first)
-        int pc = poly.Count;
+        int pc = poly.Count; // closed
         if (pc < 4) return false;
 
-        // bounds
         float minX = poly[0].x, maxX = poly[0].x;
         float minZ = poly[0].y, maxZ = poly[0].y;
         for (int i = 1; i < pc; i++)
@@ -166,11 +187,8 @@ public sealed class SplineToMesh : MonoBehaviour
         float dx = (maxX - minX) / nx;
         float dz = (maxZ - minZ) / nz;
 
-        float maxX2 = maxX;
-        float maxZ2 = maxZ;
-
-        float invW = 1f / Mathf.Max(maxX2 - minX, EPS);
-        float invH = 1f / Mathf.Max(maxZ2 - minZ, EPS);
+        float invW = 1f / Mathf.Max(maxX - minX, EPS);
+        float invH = 1f / Mathf.Max(maxZ - minZ, EPS);
 
         int vertW = nx + 1;
         int vertH = nz + 1;
@@ -179,7 +197,6 @@ public sealed class SplineToMesh : MonoBehaviour
         outVerts.Capacity = Mathf.Max(outVerts.Capacity, totalVerts);
         outUVs.Capacity = Mathf.Max(outUVs.Capacity, totalVerts);
 
-        // full grid vertices (shared)
         for (int iz = 0; iz < vertH; iz++)
         {
             float z = minZ + iz * dz;
@@ -195,14 +212,12 @@ public sealed class SplineToMesh : MonoBehaviour
             }
         }
 
-        // scanline fill per row (cell centers)
         for (int iz = 0; iz < nz; iz++)
         {
             float zCenter = minZ + (iz + 0.5f) * dz;
 
             tempXHits.Clear();
 
-            // intersections with polygon edges (even-odd rule)
             for (int i = 0; i < pc - 1; i++)
             {
                 Vector2 a = poly[i];
@@ -211,7 +226,6 @@ public sealed class SplineToMesh : MonoBehaviour
                 float z0 = a.y;
                 float z1 = b.y;
 
-                // half-open to avoid double hits at vertices
                 bool crosses = (z0 <= zCenter && z1 > zCenter) || (z1 <= zCenter && z0 > zCenter);
                 if (!crosses) continue;
 
@@ -233,26 +247,24 @@ public sealed class SplineToMesh : MonoBehaviour
                 float xR = tempXHits[k + 1];
                 if (xR <= xL) continue;
 
-                // Convert [xL, xR] interval to cell indices whose centers lie inside
                 float startF = ((xL - minX) / dx) - 0.5f;
-                float endF   = ((xR - minX) / dx) - 0.5f;
+                float endF = ((xR - minX) / dx) - 0.5f;
 
                 int ixStart = Mathf.CeilToInt(startF - 1e-6f);
-                int ixEnd   = Mathf.FloorToInt(endF + 1e-6f);
+                int ixEnd = Mathf.FloorToInt(endF + 1e-6f);
 
                 if (ixEnd < 0 || ixStart > nx - 1) continue;
 
                 ixStart = Mathf.Clamp(ixStart, 0, nx - 1);
-                ixEnd   = Mathf.Clamp(ixEnd, 0, nx - 1);
+                ixEnd = Mathf.Clamp(ixEnd, 0, nx - 1);
 
                 for (int ix = ixStart; ix <= ixEnd; ix++)
                 {
-                    int a = iz * vertW + ix;           // (x0,z0)
-                    int b = iz * vertW + (ix + 1);     // (x1,z0)
-                    int c = (iz + 1) * vertW + ix;     // (x0,z1)
-                    int d = (iz + 1) * vertW + (ix + 1); // (x1,z1)
+                    int a = iz * vertW + ix;
+                    int b = iz * vertW + (ix + 1);
+                    int c = (iz + 1) * vertW + ix;
+                    int d = (iz + 1) * vertW + (ix + 1);
 
-                    // +Y facing
                     outTris.Add(a); outTris.Add(d); outTris.Add(b);
                     outTris.Add(a); outTris.Add(c); outTris.Add(d);
                 }
@@ -262,37 +274,149 @@ public sealed class SplineToMesh : MonoBehaviour
         return outTris.Count > 0;
     }
 
-    private static void CleanupConsecutiveDuplicates(List<Vector2> poly, float eps)
+    private void CompactToUsedVertices(List<Vector3> verts, List<Vector2> uvs, List<int> tris)
+    {
+        int vCount = verts.Count;
+        EnsureArray(ref _remap, vCount);
+        for (int i = 0; i < vCount; i++) _remap[i] = -1;
+
+        _compactVerts.Clear();
+        _compactUVs.Clear();
+        _compactTris.Clear();
+
+        for (int i = 0; i < tris.Count; i++)
+        {
+            int old = tris[i];
+            int nu = _remap[old];
+            if (nu < 0)
+            {
+                nu = _compactVerts.Count;
+                _remap[old] = nu;
+                _compactVerts.Add(verts[old]);
+                _compactUVs.Add(uvs[old]);
+            }
+            _compactTris.Add(nu);
+        }
+
+        verts.Clear();
+        uvs.Clear();
+        tris.Clear();
+
+        verts.AddRange(_compactVerts);
+        uvs.AddRange(_compactUVs);
+        tris.AddRange(_compactTris);
+    }
+
+    private void ApplyNearestSplineY(List<Vector2> polyXZ, List<float> polyY, List<Vector3> verts, List<int> tris)
+    {
+        int vCount = verts.Count;
+
+        if (_usedMask == null || _usedMask.Length < vCount) _usedMask = new bool[vCount];
+        Array.Clear(_usedMask, 0, vCount);
+
+        for (int i = 0; i < tris.Count; i++)
+        {
+            int vi = tris[i];
+            if ((uint)vi < (uint)vCount) _usedMask[vi] = true;
+        }
+
+        int pc = polyXZ.Count;
+        if (pc < 2) return;
+
+        int last = pc - 1;
+        bool hasClosure = (polyXZ[0] - polyXZ[last]).sqrMagnitude <= 1e-10f;
+        int sampleCount = hasClosure ? last : pc;
+
+        const int MAX_SAMPLES = 2048;
+        int stride = Mathf.Max(1, Mathf.CeilToInt(sampleCount / (float)MAX_SAMPLES));
+
+        for (int vi = 0; vi < vCount; vi++)
+        {
+            if (!_usedMask[vi]) continue;
+
+            Vector3 v = verts[vi];
+            float vx = v.x;
+            float vz = v.z;
+
+            float bestD2 = float.PositiveInfinity;
+            float bestY = v.y;
+
+            for (int si = 0; si < sampleCount; si += stride)
+            {
+                Vector2 p = polyXZ[si];
+                float dx = p.x - vx;
+                float dz = p.y - vz;
+                float d2 = dx * dx + dz * dz;
+
+                if (d2 < bestD2)
+                {
+                    bestD2 = d2;
+                    bestY = polyY[si];
+                }
+            }
+
+            v.y = bestY;
+            verts[vi] = v;
+        }
+    }
+
+    private static void CleanupConsecutiveDuplicates(List<Vector2> poly, List<float> polyY, float eps)
     {
         float eps2 = eps * eps;
         for (int i = poly.Count - 1; i >= 1; i--)
         {
             if ((poly[i] - poly[i - 1]).sqrMagnitude <= eps2)
+            {
                 poly.RemoveAt(i);
+                polyY.RemoveAt(i);
+            }
         }
-        // keep closure if present
+
         if (poly.Count >= 3 && (poly[0] - poly[^1]).sqrMagnitude > 1e-10f)
+        {
             poly.Add(poly[0]);
+            polyY.Add(polyY[0]);
+        }
     }
 
     private void EnsureMesh()
     {
         _mf ??= GetComponent<MeshFilter>();
 
-        if (_mesh == null)
+        if (Application.isPlaying)
         {
-            _mesh = new Mesh { name = "SplineQuadFillMesh" };
-            _mesh.MarkDynamic();
-        }
+            if (_mesh == null)
+            {
+                _mesh = new Mesh { name = "SplineQuadFillMesh(Runtime)" };
+                _mesh.MarkDynamic();
+            }
 
-        if (_mf.sharedMesh != _mesh)
-            _mf.sharedMesh = _mesh;
+            if (_mf.mesh != _mesh)
+                _mf.mesh = _mesh;
+        }
+        else
+        {
+            if (_mesh == null)
+            {
+                _mesh = new Mesh { name = "SplineQuadFillMesh" };
+                _mesh.MarkDynamic();
+            }
+
+            if (_mf.sharedMesh != _mesh)
+                _mf.sharedMesh = _mesh;
+        }
     }
 
     private void ClearMesh()
     {
         EnsureMesh();
         _mesh.Clear(false);
+    }
+
+    private static void EnsureArray<T>(ref T[] arr, int size)
+    {
+        if (arr == null || arr.Length < size)
+            arr = new T[size];
     }
 
     private static float4x4 ToFloat4x4(Matrix4x4 m)

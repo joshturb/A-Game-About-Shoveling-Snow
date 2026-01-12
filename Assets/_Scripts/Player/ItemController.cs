@@ -6,6 +6,7 @@ public class ItemController : MonoBehaviour
     private SnowInteractor snowInteractor;
     private FPCModule fPCModule;
     private MovementModule movementModule;
+    private Inventory inventory;
     private Animator animator;
     private bool isPlowing;
     private bool isShoveling;
@@ -14,21 +15,20 @@ public class ItemController : MonoBehaviour
     {
         animator = GetComponent<Animator>();
         fPCModule = FindFirstObjectByType<FPCModule>();
-        var inv = FindFirstObjectByType<Inventory>();
+        inventory = FindFirstObjectByType<Inventory>();
         if (!fPCModule.TryGetModule(out movementModule))
         {
             Debug.Log("Cant find Movement Module");
             return;
         }
-        inv.OnItemEquip += OnEquip;
-        inv.OnItemDequip += OnDequip;
+        inventory.OnItemEquip += OnEquip;
+        inventory.OnItemDequip += OnDequip;
     }
 
     void OnDestroy()
     {
-        var inv = FindFirstObjectByType<Inventory>();
-        inv.OnItemEquip -= OnEquip;
-        inv.OnItemDequip -= OnDequip;
+        inventory.OnItemEquip -= OnEquip;
+        inventory.OnItemDequip -= OnDequip;
     }
 
     private void OnEquip(SnowInteractor si)

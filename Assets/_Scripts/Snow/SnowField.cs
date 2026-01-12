@@ -1,4 +1,3 @@
-// SnowField.cs
 using System;
 using System.Collections.Generic;
 using UnityEngine;
@@ -38,8 +37,8 @@ public class SnowField : MonoBehaviour
 
     [Header("Ice Rendering (Submeshes)")]
     [SerializeField, Range(0f, 1f)] private float iceTriMajority = 0.5f; // avg mask >= this => triangle goes to ice submesh
-    [SerializeField, Min(0)] private int iceVisualExpandRings = 1;        // NEW: VISUAL ONLY expansion (rings of edge-adjacent tris)
-    [SerializeField, Min(0.001f)] private float iceProbeRadius = 0.35f; // tune ~ your vertex spacing
+    [SerializeField, Min(0)] private int iceVisualExpandRings = 1;        // VISUAL ONLY expansion (rings of edge-adjacent tris)
+    [SerializeField, Min(0.001f)] private float iceProbeRadius = 0.35f;   // tune ~ your vertex spacing
     private readonly List<int> _iceProbe = new(64);
 
     public VertexOctree Tree { get; private set; }
@@ -51,11 +50,9 @@ public class SnowField : MonoBehaviour
     private MeshFilter _mf;
     private Mesh _mesh;
     private Vector3[] _verts;
-    private float _clearedThreshold;
 
+    private float[] _baseY;
     private float[] _tmpFrontWeights;
-
-    // repose support
     private List<int>[] _neighbors;
     private bool[] _reposeMark;
     private readonly List<int> _reposeList = new(1024);
@@ -77,14 +74,24 @@ public class SnowField : MonoBehaviour
 
     void Start()
     {
+        // If this object also has SplineToMesh, ensure the mesh is built before we cache baselines.
+        var stm = GetComponent<SplineToMesh>();
+        if (stm != null) stm.Rebuild();
+
         _mf = GetComponent<MeshFilter>();
-        _mesh = _mf.mesh;
+        _mesh = _mf.mesh; // instance
         _mesh.MarkDynamic();
 
         // Cache full tri list BEFORE we author submeshes, so we always have the original connectivity.
         _baseTris = CaptureBaseTriangles(_mesh);
 
         _verts = _mesh.vertices; // ONE initial copy only
+
+        // NEW: capture baseline Y from the generated (sloped) spline mesh
+        _baseY = new float[_verts.Length];
+        for (int i = 0; i < _verts.Length; i++)
+            _baseY[i] = _verts[i].y;
+
         _blocked = new bool[_verts.Length];
         _blockedCount = 0;
 
@@ -95,8 +102,6 @@ public class SnowField : MonoBehaviour
         _hf = new SnowHeightfieldCollider(transform, _mesh);
 
         snowController = FindFirstObjectByType<SnowController>();
-        float minH = snowController.GetSnowSettings().minHeight;
-        _clearedThreshold = minH + clearedEpsilon;
 
         ApplyInitialSnow();
 
@@ -105,6 +110,14 @@ public class SnowField : MonoBehaviour
 
         OnInitialized?.Invoke();
     }
+
+    public float GetBaseY(int i)
+    {
+        if (_baseY == null) return 0f;
+        if ((uint)i >= (uint)_baseY.Length) return 0f;
+        return _baseY[i];
+    }
+
 
     public bool IsIceAtWorld(Vector3 worldPos)
     {
@@ -150,7 +163,6 @@ public class SnowField : MonoBehaviour
         if (smc == 1)
             return m.triangles;
 
-        // Combine all submeshes into one connectivity list.
         int total = 0;
         for (int s = 0; s < smc; s++)
             total += m.GetTriangles(s).Length;
@@ -169,37 +181,45 @@ public class SnowField : MonoBehaviour
     private void ApplyInitialSnow()
     {
         float minH = snowController.GetSnowSettings().minHeight;
-
+        _iceMask = null;
         _iceMask ??= new float[_verts.Length];
 
         for (int i = 0; i < _verts.Length; i++)
         {
             Vector3 wp = transform.TransformPoint(_verts[i]);
 
+            float baseY = (_baseY != null && _baseY.Length == _verts.Length) ? _baseY[i] : 0f;
+            float minY = baseY + minH;
+
             if (IsInsideMaskedCollider(wp))
             {
                 _blocked[i] = true;
                 _blockedCount++;
-                _verts[i].y = minH;     // kept cleared physically, but excluded from progress
-                _iceMask[i] = 0f;       // force snow submesh bias for blocked verts
+                _verts[i].y = minY;     // cleared to baseline+minHeight
+                _iceMask[i] = 0f;
                 continue;
             }
 
-            _verts[i].y = snowController.SampleNoise(_verts[i]);          // existing behavior
-            _iceMask[i] = snowController.SampleIceMask(_verts[i]);        // ice mask noise
+            // Keep noise stable regardless of slope: sample in XZ only.
+            Vector3 pXZ = new Vector3(_verts[i].x, 0f, _verts[i].z);
+
+            // Treat SampleNoise as "height offset above baseline"
+            _verts[i].y = baseY + snowController.SampleNoise(pXZ);
+
+            if (_verts[i].y < minY) _verts[i].y = minY;
+
+            _iceMask[i] = snowController.SampleIceMask(pXZ);
         }
 
         _mesh.vertices = _verts;
 
-        // Build snow/ice submeshes without splitting vertices.
         RebuildIceSubmeshes();
-        RebuildIceVertexFlags(); // gameplay flags from true (non-expanded) ice tris
+        RebuildIceVertexFlags();
 
         ApplyMeshChanges(0);
         MeshEdgeDistanceBaker.BakeToUV2X(_mesh, submeshIndex: 1, planarXZ: true);
     }
 
-    // ---------- NEW helpers for visual expansion ----------
     private static ulong EdgeKey(int a, int b)
     {
         if (a > b) (a, b) = (b, a);
@@ -212,7 +232,6 @@ public class SnowField : MonoBehaviour
         set.Add(EdgeKey(b, c));
         set.Add(EdgeKey(c, a));
     }
-    // ------------------------------------------------------
 
     private void RebuildIceSubmeshes()
     {
@@ -235,7 +254,6 @@ public class SnowField : MonoBehaviour
             return;
         }
 
-        // Base classification (GAMEPLAY): by vertex ice mask majority.
         var baseIceTri = new bool[triCount];
         var blockedTri = new bool[triCount];
 
@@ -267,10 +285,8 @@ public class SnowField : MonoBehaviour
             }
         }
 
-        // Store TRUE ice triangles for gameplay (EditType), BEFORE any visual expansion.
         _iceTrisGameplay = iceTrisGameplay.Count > 0 ? iceTrisGameplay.ToArray() : Array.Empty<int>();
 
-        // VISUAL expansion: dilate ICE triangles by edge-adjacent rings.
         var visualIceTri = new bool[triCount];
         Array.Copy(baseIceTri, visualIceTri, triCount);
 
@@ -279,7 +295,6 @@ public class SnowField : MonoBehaviour
         {
             var edgeSet = new HashSet<ulong>(triCount * 2);
 
-            // Seed edges from current visual ice
             for (int t = 0; t < triCount; t++)
             {
                 if (!visualIceTri[t]) continue;
@@ -331,7 +346,6 @@ public class SnowField : MonoBehaviour
             }
         }
 
-        // Emit submeshes: snow vs VISUAL ice
         var snowTris = new List<int>(_baseTris.Length);
         var iceTris = new List<int>(_baseTris.Length / 4);
 
@@ -353,11 +367,10 @@ public class SnowField : MonoBehaviour
         }
 
         _mesh.subMeshCount = 2;
-        _mesh.SetTriangles(snowTris, 0, true); // Material 0 = snow
-        _mesh.SetTriangles(iceTris, 1, true);  // Material 1 = ice (VISUALLY expanded)
+        _mesh.SetTriangles(snowTris, 0, true);
+        _mesh.SetTriangles(iceTris, 1, true);
     }
 
-    // NEW: build a fast per-vertex “is ice” lookup from TRUE ice triangles (NOT expanded)
     private void RebuildIceVertexFlags()
     {
         if (_isIceVert == null || _isIceVert.Length != _mesh.vertexCount)
@@ -385,18 +398,21 @@ public class SnowField : MonoBehaviour
         if (editType == EditType.Both) return true;
 
         bool isIce = (_isIceVert != null) && _isIceVert[vertIndex];
-        return editType == EditType.Ice ? isIce : !isIce; // Snow => not ice
+        return editType == EditType.Ice ? isIce : !isIce;
     }
 
     private int CountClearedVerts(Vector3[] verts)
     {
         float minH = SnowController.Instance.GetSnowSettings().minHeight;
-        float thresh = minH + clearedEpsilon;
 
         int count = 0;
         for (int i = 0; i < verts.Length; i++)
         {
             if (_blocked != null && _blocked[i]) continue;
+
+            float baseY = (_baseY != null && _baseY.Length == verts.Length) ? _baseY[i] : 0f;
+            float thresh = (baseY + minH) + clearedEpsilon;
+
             if (verts[i].y <= thresh) count++;
         }
         return count;
@@ -460,7 +476,6 @@ public class SnowField : MonoBehaviour
             results);
     }
 
-    // CHANGED: added EditType editType
     public int EditY(List<int> indices, Vector3 hitLocal, float radius, float value, YEditMode mode, float smoothness = 0f, EditType editType = EditType.Both)
     {
         if (indices == null || indices.Count == 0) return 0;
@@ -469,7 +484,6 @@ public class SnowField : MonoBehaviour
         int changedCount = 0;
 
         float minH = snowController.GetSnowSettings().minHeight;
-        float thresh = _clearedThreshold;
 
         const float changeEps = 1e-6f;
 
@@ -479,6 +493,10 @@ public class SnowField : MonoBehaviour
             {
                 int i = indices[k];
                 if (!PassesEditType(i, editType)) continue;
+
+                float baseY = (_baseY != null && _baseY.Length == _verts.Length) ? _baseY[i] : 0f;
+                float minY = baseY + minH;
+                float thresh = minY + clearedEpsilon;
 
                 float before = _verts[i].y;
                 bool wasCleared = before <= thresh;
@@ -490,7 +508,7 @@ public class SnowField : MonoBehaviour
                     case YEditMode.Subtract: _verts[i].y -= value; break;
                 }
 
-                _verts[i].y = Mathf.Max(minH, _verts[i].y);
+                _verts[i].y = Mathf.Max(minY, _verts[i].y);
 
                 float after = _verts[i].y;
                 if (Mathf.Abs(after - before) > changeEps) changedCount++;
@@ -514,6 +532,10 @@ public class SnowField : MonoBehaviour
                 int i = indices[k];
                 if (!PassesEditType(i, editType)) continue;
 
+                float baseY = (_baseY != null && _baseY.Length == _verts.Length) ? _baseY[i] : 0f;
+                float minY = baseY + minH;
+                float thresh = minY + clearedEpsilon;
+
                 float before = _verts[i].y;
                 bool wasCleared = before <= thresh;
 
@@ -530,7 +552,7 @@ public class SnowField : MonoBehaviour
                     case YEditMode.Subtract: _verts[i].y -= value * t; break;
                 }
 
-                _verts[i].y = Mathf.Max(minH, _verts[i].y);
+                _verts[i].y = Mathf.Max(minY, _verts[i].y);
 
                 float after = _verts[i].y;
                 if (Mathf.Abs(after - before) > changeEps) changedCount++;
@@ -550,7 +572,6 @@ public class SnowField : MonoBehaviour
         return changedCount;
     }
 
-    // CHANGED: added EditType editType
     public int Plow(
         List<int> removeIndices,
         List<int> depositIndices,
@@ -567,7 +588,6 @@ public class SnowField : MonoBehaviour
         if (depositIndices == null || depositIndices.Count == 0) return 0;
 
         float minH = snowController.GetSnowSettings().minHeight;
-        float thresh = _clearedThreshold;
         const float changeEps = 1e-6f;
 
         forwardLocal.y = 0f;
@@ -591,7 +611,6 @@ public class SnowField : MonoBehaviour
 
         float powSmooth = Mathf.Max(0.0001f, smoothness);
 
-        // 1) PICKUP: remove only from behind
         float totalRemoved = 0f;
 
         int clearedDelta = 0;
@@ -602,6 +621,10 @@ public class SnowField : MonoBehaviour
             int i = removeIndices[k];
             if (!PassesEditType(i, editType)) continue;
 
+            float baseY = (_baseY != null && _baseY.Length == _verts.Length) ? _baseY[i] : 0f;
+            float minY = baseY + minH;
+            float thresh = minY + clearedEpsilon;
+
             float dx = _verts[i].x - cx;
             float dz = _verts[i].z - cz;
 
@@ -610,7 +633,7 @@ public class SnowField : MonoBehaviour
 
             float u = Mathf.Clamp01(1f - dist * invRem);
             u = u * u * (3f - 2f * u);                 // SmoothStep
-            u = Mathf.Pow(u, 1f / powSmooth);          // higher smoothness = wider
+            u = Mathf.Pow(u, 1f / powSmooth);
             float t = u;
 
             float s = dx * forwardLocal.x + dz * forwardLocal.z; // behind < 0
@@ -622,11 +645,13 @@ public class SnowField : MonoBehaviour
             float behind01 = Mathf.Clamp01((-s) * invRem);
             float desiredRemove = pushAmount * t * behind01;
 
-            float available = Mathf.Max(0f, before - minH);
+            float available = Mathf.Max(0f, before - minY);
             float actualRemove = Mathf.Min(desiredRemove, available);
             if (actualRemove <= 0f) continue;
 
-            _verts[i].y = before - actualRemove;
+            float newY = before - actualRemove;
+            if (newY < minY) newY = minY;
+            _verts[i].y = newY;
 
             float after = _verts[i].y;
             if (Mathf.Abs(after - before) > changeEps) changedCount++;
@@ -634,12 +659,11 @@ public class SnowField : MonoBehaviour
             bool isCleared = after <= thresh;
             if (wasCleared != isCleared) clearedDelta += isCleared ? 1 : -1;
 
-            totalRemoved += actualRemove;
+            totalRemoved += (before - after);
         }
 
         if (totalRemoved <= 0f) return 0;
 
-        // 2) DEPOSIT: distribute over depositIndices, biased forward
         _tmpFrontWeights ??= new float[512];
         if (_tmpFrontWeights.Length < depositIndices.Count) _tmpFrontWeights = new float[depositIndices.Count * 2];
         for (int k = 0; k < depositIndices.Count; k++) _tmpFrontWeights[k] = 0f;
@@ -658,8 +682,8 @@ public class SnowField : MonoBehaviour
             if (dist > rDep) continue;
 
             float u = Mathf.Clamp01(1f - dist * invDep);
-            u = u * u * (3f - 2f * u);                 // SmoothStep (softer edge)
-            u = Mathf.Pow(u, 1f / powSmooth);          // higher smoothness = wider
+            u = u * u * (3f - 2f * u);
+            u = Mathf.Pow(u, 1f / powSmooth);
             float t = u;
 
             float s = (_verts[i].x - cx) * forwardLocal.x + (_verts[i].z - cz) * forwardLocal.z;
@@ -680,6 +704,10 @@ public class SnowField : MonoBehaviour
             int i = depositIndices[k];
             if (!PassesEditType(i, editType)) continue;
 
+            float baseY = (_baseY != null && _baseY.Length == _verts.Length) ? _baseY[i] : 0f;
+            float minY = baseY + minH;
+            float thresh = minY + clearedEpsilon;
+
             float before = _verts[i].y;
             bool wasCleared = before <= thresh;
 
@@ -693,8 +721,7 @@ public class SnowField : MonoBehaviour
             if (wasCleared != isCleared) clearedDelta += isCleared ? 1 : -1;
         }
 
-        // 3) SLOPE RELAX: prevent vertical walls after repeated plows (respect EditType)
-        ApplyAngleOfRepose(depositIndices, minH, thresh, editType, ref clearedDelta, ref changedCount);
+        ApplyAngleOfRepose(depositIndices, minH, editType, ref clearedDelta, ref changedCount);
 
         if (changedCount == 0) return 0;
 
@@ -717,7 +744,7 @@ public class SnowField : MonoBehaviour
         for (int i = 0; i < vc; i++)
             _neighbors[i] = new List<int>(8);
 
-        int[] tris = _baseTris; // IMPORTANT: always use full connectivity, not submesh 0 only
+        int[] tris = _baseTris;
         for (int t = 0; t < tris.Length; t += 3)
         {
             int a = tris[t];
@@ -743,8 +770,7 @@ public class SnowField : MonoBehaviour
         list.Add(b);
     }
 
-    // CHANGED: added EditType editType, and we enforce that BOTH i and j pass the same type filter.
-    private void ApplyAngleOfRepose(List<int> seeds, float minH, float thresh, EditType editType, ref int clearedDelta, ref int changedCount)
+    private void ApplyAngleOfRepose(List<int> seeds, float minH, EditType editType, ref int clearedDelta, ref int changedCount)
     {
         if (reposeIterations <= 0 || reposeStrength <= 0f) return;
         if (seeds == null || seeds.Count == 0) return;
@@ -795,18 +821,25 @@ public class SnowField : MonoBehaviour
                         float excess = diff - limit;
                         float move = excess * 0.5f * strength;
 
-                        float canGive = Mathf.Max(0f, vi.y - minH);
+                        float baseYi = (_baseY != null && _baseY.Length == _verts.Length) ? _baseY[i] : 0f;
+                        float baseYj = (_baseY != null && _baseY.Length == _verts.Length) ? _baseY[j] : 0f;
+
+                        float minYi = baseYi + minH;
+                        float threshI = minYi + clearedEpsilon;
+                        float threshJ = (baseYj + minH) + clearedEpsilon;
+
+                        float canGive = Mathf.Max(0f, vi.y - minYi);
                         move = Mathf.Min(move, canGive);
                         if (move <= 0f) continue;
 
-                        bool iWas = vi.y <= thresh;
-                        bool jWas = vj.y <= thresh;
+                        bool iWas = vi.y <= threshI;
+                        bool jWas = vj.y <= threshJ;
 
                         vi.y -= move;
                         vj.y += move;
 
-                        bool iIs = vi.y <= thresh;
-                        bool jIs = vj.y <= thresh;
+                        bool iIs = vi.y <= threshI;
+                        bool jIs = vj.y <= threshJ;
 
                         if (iWas != iIs) clearedDelta += iIs ? 1 : -1;
                         if (jWas != jIs) clearedDelta += jIs ? 1 : -1;
